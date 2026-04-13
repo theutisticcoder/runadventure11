@@ -20,6 +20,7 @@ const GENRE_PROMPTS: Record<Genre, string> = {
 interface GenerateChapterParams {
   streetName1: string;
   streetName2: string;
+  currentStreet: string;
   direction: string;
   genre: Genre;
   storyHistory: string[];
@@ -32,6 +33,7 @@ export async function generateChapter(
   const {
     streetName1,
     streetName2,
+    currentStreet,
     direction,
     genre,
     storyHistory,
@@ -43,29 +45,33 @@ export async function generateChapter(
       ? `\n\nSTORY SO FAR:\n${storyHistory.slice(-3).join("\n\n---\n\n")}`
       : "";
 
-  const systemPrompt = `You are a master storyteller creating a ${GENRE_PROMPTS[genre]} story for a runner. 
-The story is told in second person ("you"). Every chapter must be minimum 500 words, immersive, and visceral.
-Always weave the real street names and direction of travel naturally into the narrative.
-End every chapter with a cliffhanger that presents exactly two choices tied to the two streets.
+  const systemPrompt = `You are a master storyteller creating a ${GENRE_PROMPTS[genre]} story for a runner.
+The story is told in second person ("you"). Every chapter must be exactly 150-200 words, immersive, and visceral.
+
+CRITICAL IMMERSION RULE: The character is physically running THROUGH the current street right now.
+Describe the street's sensory environment in vivid detail — the look and feel of "${currentStreet}", 
+what surrounds it (buildings, trees, pavement, atmosphere), the ${direction}ward momentum of running.
+Make the reader FEEL they are on this exact street. Weave in the street name naturally, not just as a label.
+Then build to a cliffhanger at the next intersection where two paths diverge.
 
 RESPONSE FORMAT (use this EXACT JSON structure, no other text):
 {
-  "chapterText": "<the full chapter text, minimum 500 words>",
+  "chapterText": "<the full chapter text, 150-200 words, vividly describing ${currentStreet} heading ${direction}>",
   "choice1": {
     "streetName": "${streetName1}",
     "direction": "left",
-    "choiceSummary": "<brief 1-sentence narrative consequence of going this way>"
+    "choiceSummary": "<brief 1-sentence narrative consequence of turning onto ${streetName1}>"
   },
   "choice2": {
     "streetName": "${streetName2}",
     "direction": "right",
-    "choiceSummary": "<brief 1-sentence narrative consequence of going this way>"
+    "choiceSummary": "<brief 1-sentence narrative consequence of turning onto ${streetName2}>"
   }
 }`;
 
-  const userPrompt = `Chapter ${chapterNumber}: The runner is heading ${direction} and reaches the intersection of ${streetName1} and ${streetName2}.
-Write this chapter in the ${genre} genre. Reference the exact street names. Minimum 500 words.
-${historyContext}`;
+  const userPrompt = `Chapter ${chapterNumber}: You are running ${direction} along ${currentStreet}.
+Ahead, the road meets an intersection with ${streetName1} on one side and ${streetName2} on the other.
+Genre: ${genre}. Vividly describe running along ${currentStreet} — its atmosphere, the feeling underfoot, what you see — then end at the intersection with a cliffhanger. 150-200 words.${historyContext}`;
 
   const response = await fetch(CHAT_URL, {
     method: "POST",

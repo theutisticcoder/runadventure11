@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ChevronRight,
   MapPin,
+  Navigation,
   Pause,
   Play,
   Square,
@@ -16,10 +17,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useBackend } from "../hooks/useBackend";
 import { useGps } from "../hooks/useGps";
 import { useRun } from "../hooks/useRun";
-import { isNearIntersection } from "../lib/gps";
+import { calculateHeading, isNearIntersection } from "../lib/gps";
 import { generateChapter, generateTTS } from "../lib/mistral";
-import { reverseGeocode } from "../lib/nominatim";
-import type { ChapterResult, Genre, RunChoice } from "../lib/types";
+import { isOnStreet, reverseGeocode } from "../lib/nominatim";
+import type { ChapterResult, Genre, GpsCoord, RunChoice } from "../lib/types";
 import {
   GENRE_BG_COLORS,
   GENRE_BUTTON_COLORS,
@@ -31,6 +32,13 @@ import RunMap from "./activerun/RunMap";
 import SaveRunModal from "./activerun/SaveRunModal";
 
 type RunPhase = "genre-select" | "running" | "save";
+
+/** State while waiting for runner to physically turn onto the chosen street */
+interface PendingTurn {
+  street: string;
+  direction: string;
+  choiceSummary: string;
+}
 
 export default function ActiveRun() {
   const navigate = useNavigate();
@@ -48,6 +56,18 @@ export default function ActiveRun() {
   const [geocodeError, setGeocodeError] = useState<string | null>(null);
   const [saveSlug, setSaveSlug] = useState<string | null>(null);
 
+  // "waitingForTurn" phase — runner tapped a choice, app awaits physical turn
+  const [pendingTurn, setPendingTurn] = useState<PendingTurn | null>(null);
+  const turnCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
+  // Consecutive GPS confirmations needed before triggering chapter
+  const turnConfirmCountRef = useRef(0);
+  // Track last checked GPS coords to avoid duplicate checks
+  const lastTurnCheckCoordsRef = useRef<GpsCoord | null>(null);
+  // Heading when choice was made — used for bearing-based turn detection
+  const choiceHeadingRef = useRef<string>("");
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioBlobUrlRef = useRef<string | null>(null);
   const intersectionCheckRef = useRef<ReturnType<typeof setInterval> | null>(
@@ -56,6 +76,8 @@ export default function ActiveRun() {
   const lastIntersectionRef = useRef<string>("");
   const chapterTextRef = useRef<HTMLDivElement>(null);
   const hasGeneratedOpeningChapterRef = useRef(false);
+  // Track the street the runner is currently on
+  const currentStreetRef = useRef<string>("");
 
   const run = useRun();
   const gps = useGps();
@@ -119,18 +141,34 @@ export default function ActiveRun() {
     [revokeBlobUrl],
   );
 
+  /** Stop turn-detection polling */
+  const stopTurnCheck = useCallback(() => {
+    if (turnCheckIntervalRef.current) {
+      clearInterval(turnCheckIntervalRef.current);
+      turnCheckIntervalRef.current = null;
+    }
+    turnConfirmCountRef.current = 0;
+    lastTurnCheckCoordsRef.current = null;
+  }, []);
+
   // Generate a chapter at the current intersection
   const triggerChapter = useCallback(
-    async (street1: string, street2: string) => {
+    async (street1: string, street2: string, onStreet?: string) => {
       if (!run.genre) return;
+
+      // The street the runner is currently traveling on
+      const activeStreet = onStreet ?? currentStreetRef.current ?? street1;
+
       setIsGenerating(true);
       setChoicesVisible(false);
       setChapterResult(null);
+      setPendingTurn(null);
       const chapterNumber = run.chapters.length + 1;
       try {
         const result = await generateChapter({
           streetName1: street1,
           streetName2: street2,
+          currentStreet: activeStreet,
           direction: gps.heading,
           genre: run.genre,
           storyHistory,
@@ -165,20 +203,112 @@ export default function ActiveRun() {
     [run, gps.heading, storyHistory, playTTS],
   );
 
-  // Handle a choice tap
+  /**
+   * Start polling GPS to detect when runner has physically turned onto the
+   * chosen street. Checks every 3.5 seconds.
+   * Detection triggers when EITHER:
+   *  - Nominatim confirms the runner is now on the chosen street (2 consecutive hits), OR
+   *  - The runner has moved 25m+ from the intersection and their heading matches
+   *    the chosen direction within ±45 degrees.
+   */
+  const startTurnDetection = useCallback(
+    (chosen: PendingTurn, intersectionCoord: GpsCoord) => {
+      stopTurnCheck();
+      turnConfirmCountRef.current = 0;
+
+      turnCheckIntervalRef.current = setInterval(async () => {
+        if (!gps.coords) return;
+
+        // Skip if coords haven't changed meaningfully
+        const last = lastTurnCheckCoordsRef.current;
+        if (last) {
+          const dLat = Math.abs(gps.coords.lat - last.lat);
+          const dLon = Math.abs(gps.coords.lon - last.lon);
+          if (dLat < 0.00002 && dLon < 0.00002) return; // <2m, skip
+        }
+        lastTurnCheckCoordsRef.current = { ...gps.coords };
+
+        // Method 1: Nominatim confirms current street matches chosen street
+        const onChosen = await isOnStreet(gps.coords, chosen.street);
+        if (onChosen) {
+          turnConfirmCountRef.current += 1;
+          if (turnConfirmCountRef.current >= 2) {
+            // Confirmed on the chosen street!
+            stopTurnCheck();
+            currentStreetRef.current = chosen.street;
+            const geo = await reverseGeocode(gps.coords);
+            const crossStreet =
+              geo.nearbyStreets[0] ?? geo.street ?? "the path ahead";
+            await triggerChapter(chosen.street, crossStreet, chosen.street);
+            return;
+          }
+        } else {
+          turnConfirmCountRef.current = 0;
+        }
+
+        // Method 2: Bearing-based detection as fallback
+        // If runner has moved 25m+ from intersection and heading changed
+        const trailSnapshot = gps.gpsTrail;
+        if (trailSnapshot.length >= 2) {
+          const recent = trailSnapshot.slice(-6);
+          const totalMoved = recent.reduce((sum, pt, i) => {
+            if (i === 0) return sum;
+            const prev = recent[i - 1];
+            const dLat2 = pt.lat - prev.lat;
+            const dLon2 = pt.lon - prev.lon;
+            return sum + Math.sqrt(dLat2 * dLat2 + dLon2 * dLon2) * 111320;
+          }, 0);
+
+          if (totalMoved >= 25 && trailSnapshot.length >= 4) {
+            const newHeading = calculateHeading(
+              trailSnapshot[trailSnapshot.length - 4],
+              trailSnapshot[trailSnapshot.length - 1],
+            );
+            // Check distance from the original intersection
+            const dLatI = gps.coords.lat - intersectionCoord.lat;
+            const dLonI = gps.coords.lon - intersectionCoord.lon;
+            const distFromIntersection =
+              Math.sqrt(dLatI * dLatI + dLonI * dLonI) * 111320;
+
+            if (
+              distFromIntersection >= 20 &&
+              newHeading !== choiceHeadingRef.current
+            ) {
+              // Heading has changed — assume they turned
+              stopTurnCheck();
+              currentStreetRef.current = chosen.street;
+              const geo = await reverseGeocode(gps.coords);
+              const crossStreet =
+                geo.nearbyStreets[0] ?? geo.street ?? "the path ahead";
+              await triggerChapter(chosen.street, crossStreet, chosen.street);
+            }
+          }
+        }
+      }, 3500);
+    },
+    [gps.coords, gps.gpsTrail, stopTurnCheck, triggerChapter],
+  );
+
+  // Handle a choice tap — records choice and starts waiting for the physical turn
   const handleChoice = useCallback(
-    async (choice: RunChoice) => {
+    (choice: RunChoice) => {
       if (isPlaying || isGenerating) return;
       run.recordChoice(choice);
       setChoicesVisible(false);
-      if (gps.coords) {
-        const geo = await reverseGeocode(gps.coords);
-        const street1 = choice.streetName;
-        const street2 = geo.nearbyStreets[0] ?? geo.street ?? "the path ahead";
-        await triggerChapter(street1, street2);
-      }
+      choiceHeadingRef.current = gps.heading;
+
+      const pending: PendingTurn = {
+        street: choice.streetName,
+        direction: choice.direction,
+        choiceSummary: choice.choiceSummary,
+      };
+      setPendingTurn(pending);
+
+      // Capture intersection coords at moment of choice
+      const intersectionCoord: GpsCoord = gps.coords ?? { lat: 0, lon: 0 };
+      startTurnDetection(pending, intersectionCoord);
     },
-    [isPlaying, isGenerating, run, gps.coords, triggerChapter],
+    [isPlaying, isGenerating, run, gps.heading, gps.coords, startTurnDetection],
   );
 
   // Start GPS when run begins
@@ -191,8 +321,9 @@ export default function ActiveRun() {
       stopTracking();
       if (intersectionCheckRef.current)
         clearInterval(intersectionCheckRef.current);
+      stopTurnCheck();
     };
-  }, [phase, startTracking, stopTracking]);
+  }, [phase, startTracking, stopTracking, stopTurnCheck]);
 
   // Append GPS points to run state
   const appendGpsPoint = run.appendGpsPoint;
@@ -217,9 +348,10 @@ export default function ActiveRun() {
         const allStreets = [geo.street, ...geo.nearbyStreets].filter(Boolean);
         const street1 = allStreets[0] ?? "the starting line";
         const street2 = allStreets[1] ?? "the open road";
+        currentStreetRef.current = street1;
         // Mark this combo so the intersection loop won't re-trigger it immediately
         lastIntersectionRef.current = `${street1}|${street2}`;
-        await triggerChapter(street1, street2);
+        await triggerChapter(street1, street2, street1);
       } catch {
         // Silently fall back — intersection loop will pick up next chapter
         hasGeneratedOpeningChapterRef.current = false;
@@ -228,11 +360,19 @@ export default function ActiveRun() {
   }, [phase, gps.coords, isGenerating, isPlaying, triggerChapter]);
 
   // Intersection detection loop — every 7 seconds
+  // Paused while waiting for a turn (pendingTurn is set)
   const gpsTrail = gps.gpsTrail;
   useEffect(() => {
     if (phase !== "running") return;
     intersectionCheckRef.current = setInterval(async () => {
-      if (!gps.coords || runStatus !== "active" || isGenerating || isPlaying)
+      // Don't trigger new chapters while waiting for turn or already busy
+      if (
+        !gps.coords ||
+        runStatus !== "active" ||
+        isGenerating ||
+        isPlaying ||
+        pendingTurn !== null
+      )
         return;
       if (!isNearIntersection(gps.coords, gpsTrail)) return;
 
@@ -244,7 +384,8 @@ export default function ActiveRun() {
       if (key === lastIntersectionRef.current) return;
       lastIntersectionRef.current = key;
 
-      await triggerChapter(allStreets[0], allStreets[1]);
+      currentStreetRef.current = allStreets[0];
+      await triggerChapter(allStreets[0], allStreets[1], allStreets[0]);
     }, 7000);
     return () => {
       if (intersectionCheckRef.current)
@@ -256,6 +397,7 @@ export default function ActiveRun() {
     runStatus,
     isGenerating,
     isPlaying,
+    pendingTurn,
     gpsTrail,
     triggerChapter,
   ]);
@@ -267,8 +409,9 @@ export default function ActiveRun() {
       if (audioRef.current) {
         audioRef.current.pause();
       }
+      stopTurnCheck();
     };
-  }, [revokeBlobUrl]);
+  }, [revokeBlobUrl, stopTurnCheck]);
 
   const handleStartRun = (genre: Genre) => {
     run.startRun(genre);
@@ -278,6 +421,7 @@ export default function ActiveRun() {
   const handleEndRun = () => {
     run.endRun();
     gps.stopTracking();
+    stopTurnCheck();
     if (audioRef.current) audioRef.current.pause();
     setIsPlaying(false);
     setPhase("save");
@@ -472,7 +616,7 @@ export default function ActiveRun() {
         )}
 
         {/* Empty / waiting state */}
-        {!isGenerating && !chapterResult && !gps.error && (
+        {!isGenerating && !chapterResult && !gps.error && !pendingTurn && (
           <div
             className="flex flex-col items-center gap-3 p-8 text-center"
             data-ocid="waiting-state"
@@ -561,6 +705,52 @@ export default function ActiveRun() {
                 </div>
               </button>
             ))}
+          </div>
+        )}
+
+        {/* Waiting for turn indicator */}
+        {pendingTurn && !isGenerating && (
+          <div
+            className={`mx-4 mt-4 rounded-xl border px-4 py-4 flex items-start gap-3 ${genreBg} ${genreGlow}`}
+            data-ocid="turn-waiting-indicator"
+            aria-live="polite"
+          >
+            <Navigation
+              size={22}
+              className={`${genreColor} flex-shrink-0 mt-0.5 animate-pulse`}
+            />
+            <div className="min-w-0">
+              <p
+                className={`font-display font-bold text-sm ${genreColor} leading-tight`}
+              >
+                Keep running…
+              </p>
+              <p className="text-sm text-foreground mt-1 leading-snug">
+                Turn onto{" "}
+                <span className={`font-bold ${genreColor}`}>
+                  {pendingTurn.street}
+                </span>{" "}
+                to continue your adventure
+              </p>
+              <p className="text-xs text-muted-foreground mt-1.5 italic line-clamp-2">
+                "{pendingTurn.choiceSummary}"
+              </p>
+              <div className="flex items-center gap-1.5 mt-2.5">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className={`h-1.5 rounded-full ${genreColor.replace("text-", "bg-")} animate-pulse`}
+                    style={{
+                      width: i === 1 ? "24px" : "8px",
+                      animationDelay: `${i * 0.3}s`,
+                    }}
+                  />
+                ))}
+                <span className="text-xs text-muted-foreground ml-1">
+                  Detecting turn…
+                </span>
+              </div>
+            </div>
           </div>
         )}
       </div>
