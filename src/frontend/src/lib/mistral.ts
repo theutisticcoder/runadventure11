@@ -164,5 +164,7 @@ export async function generateTTS(text: string): Promise<Blob> {
 
   // Use arrayBuffer → Blob with explicit MIME type so browsers can decode it
   const buffer = await response.arrayBuffer();
-  return new Blob([buffer], { type: "audio/mpeg" });
+  var blob = new Blob([buffer], { type: "audio/mpeg" });
+var url = URL.createObjectURL(blob)
+return url;
 }
