@@ -98,6 +98,7 @@ export default function ActiveRun() {
         audioRef.current = audio;
         audio.src = url;
         audio.load();
+audio.controls= true
 
         audio.onended = () => {
           setIsPlaying(false);
@@ -110,7 +111,8 @@ export default function ActiveRun() {
         };
 
         try {
-          await audio.play();
+          
+document.body.appendChild(audio)
         } catch (playErr) {
           console.warn("TTS play() blocked (autoplay policy):", playErr);
           setIsPlaying(false);
