@@ -140,7 +140,12 @@ Genre: ${genre}. Vividly describe running along ${currentStreet} — its atmosph
   return { chapterText, choice1, choice2 };
 }
 
-export async function generateTTS(text: string): Promise<Blob> {
+/**
+ * Fetch TTS audio and return a raw ArrayBuffer.
+ * The caller (ActiveRun) uses Web Audio API (AudioContext.decodeAudioData)
+ * for reliable playback on iOS Safari & Android Chrome.
+ */
+export async function generateTTS(text: string): Promise<ArrayBuffer> {
   // Trim text to reasonable length for TTS (API limits)
   const trimmed = text.length > 4000 ? `${text.slice(0, 4000)}...` : text;
 
@@ -158,13 +163,18 @@ export async function generateTTS(text: string): Promise<Blob> {
   });
 
   if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`TTS API error: ${response.status} ${err}`);
+    const errText = await response.text();
+    throw new Error(`TTS API error: ${response.status} ${errText}`);
   }
 
-  // Use arrayBuffer → Blob with explicit MIME type so browsers can decode it
-  const buffer = await response.arrayBuffer();
-  var blob = new Blob([buffer], { type: "audio/mpeg" });
-var url = URL.createObjectURL(blob)
-return url;
+  const arrayBuffer = await response.arrayBuffer();
+  console.log(
+    `[TTS] arrayBuffer received — size: ${arrayBuffer.byteLength} bytes`,
+  );
+
+  if (arrayBuffer.byteLength === 0) {
+    throw new Error("TTS returned empty audio buffer");
+  }
+
+  return arrayBuffer;
 }

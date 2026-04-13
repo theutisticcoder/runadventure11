@@ -7,6 +7,7 @@ import {
   MapPin,
   Pause,
   Play,
+  SkipForward,
   Square,
   Swords,
   Volume2,
@@ -41,22 +42,124 @@ export default function ActiveRun() {
   const [geocodeError, setGeocodeError] = useState<string | null>(null);
   const [saveSlug, setSaveSlug] = useState<string | null>(null);
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioBlobUrlRef = useRef<string | null>(null);
+  // Web Audio API — most reliable approach for mobile browsers (iOS Safari, Android Chrome)
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Callback to resolve/skip the current playback promise early (skip narration)
+  const skipCallbackRef = useRef<(() => void) | null>(null);
+
   const intersectionCheckRef = useRef<ReturnType<typeof setInterval> | null>(
     null,
   );
   const lastIntersectionRef = useRef<string>("");
   const chapterTextRef = useRef<HTMLDivElement>(null);
   const hasGeneratedOpeningChapterRef = useRef(false);
-  // Track the street the runner is currently on
   const currentStreetRef = useRef<string>("");
 
   const run = useRun();
   const gps = useGps();
   const { saveRun, isSaving } = useBackend();
 
-  // Auto-start run when genre is passed via URL search param (runs once on mount)
+  // ─── Clean up AudioContext on unmount ────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      currentSourceRef.current?.stop();
+      audioContextRef.current?.close();
+      audioContextRef.current = null;
+    };
+  }, []);
+
+  // ─── Stop any in-progress narration ───────────────────────────────────────
+  const stopNarration = useCallback(() => {
+    try {
+      currentSourceRef.current?.stop();
+    } catch {
+      // source may already be stopped — safe to ignore
+    }
+    currentSourceRef.current = null;
+    // Fire skip callback so downstream state cleans up
+    if (skipCallbackRef.current) {
+      skipCallbackRef.current();
+      skipCallbackRef.current = null;
+    }
+    setIsPlaying(false);
+  }, []);
+
+  // ─── Skip narration button handler ────────────────────────────────────────
+  const handleSkipNarration = useCallback(() => {
+    stopNarration();
+  }, [stopNarration]);
+
+  // ─── Play TTS using Web Audio API ────────────────────────────────────────
+  // ArrayBuffer → AudioContext.decodeAudioData → createBufferSource().start()
+  // This approach works reliably on iOS Safari and Android Chrome where
+  // HTMLAudioElement.play() throws NotSupportedError (code 9).
+  const playTTS = useCallback(async (text: string): Promise<void> => {
+    setIsPlaying(true);
+    try {
+      console.log("[TTS] Fetching audio buffer…");
+      const arrayBuffer = await generateTTS(text);
+
+      // Ensure AudioContext exists and is running
+      if (
+        !audioContextRef.current ||
+        audioContextRef.current.state === "closed"
+      ) {
+        console.log("[TTS] Creating new AudioContext");
+        audioContextRef.current = new AudioContext();
+      }
+      const ctx = audioContextRef.current;
+      if (ctx.state === "suspended") {
+        console.log("[TTS] Resuming suspended AudioContext");
+        await ctx.resume();
+      }
+      console.log("[TTS] AudioContext state:", ctx.state);
+
+      console.log("[TTS] Decoding audio data…");
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      console.log(
+        "[TTS] Audio decoded — duration:",
+        audioBuffer.duration.toFixed(1),
+        "s",
+      );
+
+      // Stop any previous source
+      try {
+        currentSourceRef.current?.stop();
+      } catch {
+        // already stopped — ignore
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      currentSourceRef.current = source;
+
+      await new Promise<void>((resolve) => {
+        // Store resolve so skip button can fire it early
+        skipCallbackRef.current = () => {
+          console.log("[TTS] playback skipped by user");
+          resolve();
+        };
+
+        source.onended = () => {
+          console.log("[TTS] onended fired — narration complete");
+          skipCallbackRef.current = null;
+          currentSourceRef.current = null;
+          setIsPlaying(false);
+          resolve();
+        };
+
+        console.log("[TTS] Calling source.start()…");
+        source.start(0);
+      });
+    } catch (err) {
+      console.error("[TTS] playback error:", err);
+      setIsPlaying(false);
+    }
+  }, []);
+
+  // ─── Auto-start run when genre is in URL ──────────────────────────────────
   const autoStartedRef = useRef(false);
   const startRun = run.startRun;
   useEffect(() => {
@@ -76,57 +179,11 @@ export default function ActiveRun() {
     startRun(genre);
   }, [urlGenre, startRun]);
 
-  // Cleanup blob URLs to avoid memory leaks
-  const revokeBlobUrl = useCallback(() => {
-    if (audioBlobUrlRef.current) {
-      URL.revokeObjectURL(audioBlobUrlRef.current);
-      audioBlobUrlRef.current = null;
-    }
-  }, []);
-
-  // Play TTS for a chapter — GPS auto-detection handles turns, no buttons needed
-  const playTTS = useCallback(
-    async (text: string) => {
-      setIsPlaying(true);
-      try {
-        const url = await generateTTS(text);
-        
-        const audio = new Audio()
-
-        audio.src = url
-audio.controls= true
-consolr.log(url)
-        audio.onended = () => {
-          setIsPlaying(false);
-          URL.revokeObjectURL(url);
-          audioBlobUrlRef.current = null;
-        };
-        audio.onerror = (e) => {
-          console.warn("TTS audio playback error:", e);
-          setIsPlaying(false);
-        };
-
-        try {
-          
-document.body.appendChild(audio)
-        } catch (playErr) {
-          console.warn("TTS play() blocked (autoplay policy):", playErr);
-          setIsPlaying(false);
-        }
-      } catch (err) {
-        console.error("TTS generation failed:", err);
-        setIsPlaying(false);
-      }
-    },
-    [revokeBlobUrl],
-  );
-
-  // Generate a chapter at the current intersection
+  // ─── Generate a chapter at the current intersection ───────────────────────
   const triggerChapter = useCallback(
     async (street1: string, street2: string, onStreet?: string) => {
       if (!run.genre) return;
 
-      // The street the runner is currently traveling on
       const activeStreet = onStreet ?? currentStreetRef.current ?? street1;
 
       setIsGenerating(true);
@@ -152,7 +209,6 @@ document.body.appendChild(audio)
           choiceIndex: -1,
         });
         setIsGenerating(false);
-        // Scroll chapter into view
         setTimeout(() => {
           chapterTextRef.current?.scrollIntoView({
             behavior: "smooth",
@@ -170,7 +226,7 @@ document.body.appendChild(audio)
     [run, gps.heading, storyHistory, playTTS],
   );
 
-  // Start GPS when run begins
+  // ─── Start GPS when run begins ────────────────────────────────────────────
   const startTracking = gps.startTracking;
   const stopTracking = gps.stopTracking;
   useEffect(() => {
@@ -183,7 +239,7 @@ document.body.appendChild(audio)
     };
   }, [phase, startTracking, stopTracking]);
 
-  // Append GPS points to run state
+  // ─── Append GPS points to run state ───────────────────────────────────────
   const appendGpsPoint = run.appendGpsPoint;
   const runStatus = run.runStatus;
   useEffect(() => {
@@ -192,7 +248,7 @@ document.body.appendChild(audio)
     }
   }, [gps.coords, phase, runStatus, appendGpsPoint]);
 
-  // Opening chapter — fires once when the first GPS fix arrives after run start
+  // ─── Opening chapter on first GPS fix ─────────────────────────────────────
   useEffect(() => {
     if (phase !== "running") return;
     if (!gps.coords) return;
@@ -207,22 +263,19 @@ document.body.appendChild(audio)
         const street1 = allStreets[0] ?? "the starting line";
         const street2 = allStreets[1] ?? "the open road";
         currentStreetRef.current = street1;
-        // Mark this combo so the intersection loop won't re-trigger it immediately
         lastIntersectionRef.current = `${street1}|${street2}`;
         await triggerChapter(street1, street2, street1);
       } catch {
-        // Silently fall back — intersection loop will pick up next chapter
         hasGeneratedOpeningChapterRef.current = false;
       }
     })();
   }, [phase, gps.coords, isGenerating, isPlaying, triggerChapter]);
 
-  // Intersection detection loop — every 7 seconds, fully automatic
+  // ─── Intersection detection loop — every 7 seconds ───────────────────────
   const gpsTrail = gps.gpsTrail;
   useEffect(() => {
     if (phase !== "running") return;
     intersectionCheckRef.current = setInterval(async () => {
-      // Don't trigger new chapters while already busy
       if (!gps.coords || runStatus !== "active" || isGenerating || isPlaying)
         return;
       if (!isNearIntersection(gps.coords, gpsTrail)) return;
@@ -252,17 +305,22 @@ document.body.appendChild(audio)
     triggerChapter,
   ]);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      revokeBlobUrl();
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-    };
-  }, [revokeBlobUrl]);
-
+  // ─── Start Run handler ────────────────────────────────────────────────────
+  // Create (or resume) the AudioContext on the user gesture so the browser
+  // autoplay policy is satisfied before the first TTS call.
   const handleStartRun = (genre: Genre) => {
+    if (
+      !audioContextRef.current ||
+      audioContextRef.current.state === "closed"
+    ) {
+      audioContextRef.current = new AudioContext();
+      console.log("[TTS] AudioContext created on user gesture");
+    }
+    if (audioContextRef.current.state === "suspended") {
+      audioContextRef.current.resume().then(() => {
+        console.log("[TTS] AudioContext resumed on user gesture");
+      });
+    }
     run.startRun(genre);
     setPhase("running");
   };
@@ -270,8 +328,7 @@ document.body.appendChild(audio)
   const handleEndRun = () => {
     run.endRun();
     gps.stopTracking();
-    if (audioRef.current) audioRef.current.pause();
-    setIsPlaying(false);
+    stopNarration();
     setPhase("save");
   };
 
@@ -291,7 +348,7 @@ document.body.appendChild(audio)
     navigate({ to: "/story/$slug", params: { slug } });
   };
 
-  // ─── Genre select screen ───────────────────────────────────────────────────
+  // ─── Genre select screen ──────────────────────────────────────────────────
   if (phase === "genre-select") {
     return <GenreSelector onStart={handleStartRun} />;
   }
@@ -491,7 +548,7 @@ document.body.appendChild(audio)
           </div>
         )}
 
-        {/* TTS narration indicator */}
+        {/* TTS narration indicator + skip button */}
         {isPlaying && (
           <div
             className={`mx-4 mt-4 rounded-xl border px-4 py-3 flex items-center gap-3 animate-glow-pulse ${genreBg}`}
@@ -499,7 +556,7 @@ document.body.appendChild(audio)
             aria-live="polite"
           >
             <Volume2 size={20} className={`${genreColor} flex-shrink-0`} />
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className={`font-display font-semibold text-sm ${genreColor}`}>
                 Listening to your story…
               </p>
@@ -507,7 +564,8 @@ document.body.appendChild(audio)
                 Keep running — next chapter triggers automatically
               </p>
             </div>
-            <div className="ml-auto flex items-center gap-0.5">
+            {/* Animated bars */}
+            <div className="flex items-center gap-0.5 shrink-0">
               {[1, 2, 3, 4, 5].map((b) => (
                 <div
                   key={b}
@@ -519,6 +577,18 @@ document.body.appendChild(audio)
                 />
               ))}
             </div>
+            {/* Skip narration */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleSkipNarration}
+              className="shrink-0 h-8 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground"
+              aria-label="Skip narration"
+              data-ocid="skip-narration-btn"
+            >
+              <SkipForward size={14} />
+              Skip
+            </Button>
           </div>
         )}
       </div>
