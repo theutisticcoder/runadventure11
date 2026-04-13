@@ -89,11 +89,8 @@ export default function ActiveRun() {
     async (text: string) => {
       setIsPlaying(true);
       try {
-        const blob = await generateTTS(text);
-        revokeBlobUrl();
-        const url = URL.createObjectURL(blob);
-        audioBlobUrlRef.current = url;
-
+        const url = await generateTTS(text);
+        
         const audio = new Audio(url);
 
         
