@@ -1,0 +1,49 @@
+type SaveRunRequest = 
+ record {
+   chapters: vec Chapter;
+   choices: vec text;
+   endTime: int;
+   genre: text;
+   gpsRoute: vec GpsCoord;
+   startTime: int;
+   title: text;
+   totalDistance: float64;
+   userName: opt text;
+ };
+type Run = 
+ record {
+   chapters: vec Chapter;
+   choices: vec text;
+   endTime: int;
+   genre: text;
+   gpsRoute: vec GpsCoord;
+   id: nat;
+   slug: text;
+   startTime: int;
+   title: text;
+   totalDistance: float64;
+   userId: principal;
+   userName: opt text;
+ };
+type GpsCoord = 
+ record {
+   lat: float64;
+   lon: float64;
+ };
+type Chapter = 
+ record {
+   choiceIndex: nat;
+   direction: text;
+   streetName1: text;
+   streetName2: text;
+   "text": text;
+ };
+service : {
+  getAllRuns: () -> (vec Run) query;
+  getMyRuns: () -> (vec Run) query;
+  getRunBySlug: (slug: text) -> (opt Run) query;
+  getRunsByUser: (userId: principal) -> (vec Run) query;
+  getUser: (userId: principal) -> (opt text) query;
+  saveRun: (req: SaveRunRequest) -> (text);
+  setUserName: (name: text) -> ();
+}

@@ -1,0 +1,45 @@
+// Version: 1.0.0
+type Chapter__327201525 =
+  {
+    choiceIndex : Nat;
+    direction : Text;
+    streetName1 : Text;
+    streetName2 : Text;
+    text : Text
+  };
+type Data__791452850<K, V> =
+  {var count : Nat__490723111; kvs : [var ?(K, V)]};
+type GpsCoord__389663433 = {lat : Float; lon : Float};
+type Internal__8484328<K, V> =
+  {children : [var ?Node__46230540<K, V>]; data : Data__791452850<K, V>};
+type Leaf__809889148<K, V> = {data : Data__791452850<K, V>};
+type Nat__490723111 = Nat__920180692;
+type Nat__920180692 = Nat;
+type Node__46230540<K, V> =
+  {#internal : Internal__8484328<K, V>; #leaf : Leaf__809889148<K, V>};
+type Run__198745984 = Run__619401280;
+type Run__619401280 =
+  {
+    chapters : [Chapter__327201525];
+    choices : [Text];
+    endTime : Int;
+    genre : Text;
+    gpsRoute : [GpsCoord__389663433];
+    id : Nat;
+    slug : Text;
+    startTime : Int;
+    title : Text;
+    totalDistance : Float;
+    userId : Principal;
+    userName : ?Text
+  };
+actor {
+  stable runs :
+    {
+      var blockIndex : Nat__490723111;
+      var blocks : [var [var ?Run__198745984]];
+      var elementIndex : Nat__490723111
+    };
+  stable userNames :
+    {var root : Node__46230540<Principal, Text>; var size : Nat__490723111}
+};

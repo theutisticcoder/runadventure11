@@ -1,0 +1,29 @@
+{
+  "overview": "RunQuest Adventure is an immersive run-sharing app that turns your real GPS running routes into AI-powered interactive story adventures. Using your actual location and real street intersections detected via OpenStreetMap, Mistral AI narrates a genre-driven story out loud — Fantasy, Sci-Fi, Horror, Mystery, or Romance — as you run. At each intersection you make branching story choices, then save and share your completed adventure with the world.",
+  "features": [
+    "Real-time GPS tracking with live Leaflet.js map and route trail",
+    "OpenStreetMap Nominatim intersection detection using real street names",
+    "AI story generation via Mistral (mistral-large-latest) with 500-word minimum chapters",
+    "Text-to-Speech narration via Mistral TTS (voxtral-mini-tts-2603) with audio-gated choice buttons",
+    "Five genre themes: Fantasy, Sci-Fi, Horror, Mystery, Romance",
+    "Branching narrative choices at every real-world intersection",
+    "Run saving with auto-generated story titles and shareable URLs",
+    "Public Adventure Feed showing all shared runs",
+    "Chapter-by-chapter story viewer for shared adventures",
+    "Internet Identity authentication for run saving"
+  ],
+  "category": "productivity",
+  "tags": [
+    "running",
+    "adventure",
+    "ai",
+    "gps",
+    "storytelling",
+    "mistral",
+    "tts",
+    "maps",
+    "interactive-fiction",
+    "fitness"
+  ],
+  "last_updated": "2026-04-12T23:17:54.648Z"
+}
