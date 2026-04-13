@@ -159,8 +159,6 @@ export async function generateTTS(text: string): Promise<ArrayBuffer> {
       model: "voxtral-mini-tts-2603",
       voice: "en_paul_neutral",
       input: trimmed,
-      responseFormat: "mp3",
-
     }),
   });
 
