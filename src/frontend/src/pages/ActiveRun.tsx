@@ -100,7 +100,7 @@ export default function ActiveRun() {
     try {
       console.log("[TTS] Fetching audio buffer…");
       const url = await generateTTS(text);
-
+console.log(url)
       // Ensure AudioContext exists and is running
       
       var au = new Audio(url);
