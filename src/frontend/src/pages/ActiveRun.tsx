@@ -112,7 +112,6 @@ export default function ActiveRun() {
       console.error("[TTS] playback error:", err);
       setIsPlaying(false);
     }
-  });
 
   // ─── Auto-start run when genre is in URL ──────────────────────────────────
   const autoStartedRef = useRef(false);
