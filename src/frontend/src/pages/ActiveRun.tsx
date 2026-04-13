@@ -1,3 +1,4 @@
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -104,7 +105,10 @@ export default function ActiveRun() {
       
       var au = new Audio(url);
       au.controls = true;
+au.onload = ()=>{
       document.body.appendChild(au)
+}
+
       
       
     } catch (err) {
