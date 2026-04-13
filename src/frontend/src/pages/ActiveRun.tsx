@@ -4,9 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   AlertTriangle,
-  ChevronRight,
   MapPin,
-  Navigation,
   Pause,
   Play,
   Square,
@@ -17,28 +15,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useBackend } from "../hooks/useBackend";
 import { useGps } from "../hooks/useGps";
 import { useRun } from "../hooks/useRun";
-import { calculateHeading, isNearIntersection } from "../lib/gps";
+import { isNearIntersection } from "../lib/gps";
 import { generateChapter, generateTTS } from "../lib/mistral";
-import { isOnStreet, reverseGeocode } from "../lib/nominatim";
-import type { ChapterResult, Genre, GpsCoord, RunChoice } from "../lib/types";
-import {
-  GENRE_BG_COLORS,
-  GENRE_BUTTON_COLORS,
-  GENRE_COLORS,
-  GENRE_GLOW,
-} from "../lib/types";
+import { reverseGeocode } from "../lib/nominatim";
+import type { ChapterResult, Genre } from "../lib/types";
+import { GENRE_BG_COLORS, GENRE_COLORS, GENRE_GLOW } from "../lib/types";
 import GenreSelector from "./activerun/GenreSelector";
 import RunMap from "./activerun/RunMap";
 import SaveRunModal from "./activerun/SaveRunModal";
 
 type RunPhase = "genre-select" | "running" | "save";
-
-/** State while waiting for runner to physically turn onto the chosen street */
-interface PendingTurn {
-  street: string;
-  direction: string;
-  choiceSummary: string;
-}
 
 export default function ActiveRun() {
   const navigate = useNavigate();
@@ -51,22 +37,9 @@ export default function ActiveRun() {
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [choicesVisible, setChoicesVisible] = useState(false);
   const [storyHistory, setStoryHistory] = useState<string[]>([]);
   const [geocodeError, setGeocodeError] = useState<string | null>(null);
   const [saveSlug, setSaveSlug] = useState<string | null>(null);
-
-  // "waitingForTurn" phase — runner tapped a choice, app awaits physical turn
-  const [pendingTurn, setPendingTurn] = useState<PendingTurn | null>(null);
-  const turnCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
-    null,
-  );
-  // Consecutive GPS confirmations needed before triggering chapter
-  const turnConfirmCountRef = useRef(0);
-  // Track last checked GPS coords to avoid duplicate checks
-  const lastTurnCheckCoordsRef = useRef<GpsCoord | null>(null);
-  // Heading when choice was made — used for bearing-based turn detection
-  const choiceHeadingRef = useRef<string>("");
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioBlobUrlRef = useRef<string | null>(null);
@@ -111,45 +84,44 @@ export default function ActiveRun() {
     }
   }, []);
 
-  // Play TTS for a chapter — shows choices only after audio ends
+  // Play TTS for a chapter — GPS auto-detection handles turns, no buttons needed
   const playTTS = useCallback(
     async (text: string) => {
       setIsPlaying(true);
-      setChoicesVisible(false);
       try {
         const blob = await generateTTS(text);
         revokeBlobUrl();
         const url = URL.createObjectURL(blob);
         audioBlobUrlRef.current = url;
 
-        const audio = new Audio(url);
+        const audio = new Audio();
         audioRef.current = audio;
+        audio.src = url;
+        audio.load();
+
         audio.onended = () => {
           setIsPlaying(false);
-          setChoicesVisible(true);
+          URL.revokeObjectURL(url);
+          audioBlobUrlRef.current = null;
         };
-        audio.onerror = () => {
+        audio.onerror = (e) => {
+          console.warn("TTS audio playback error:", e);
           setIsPlaying(false);
-          setChoicesVisible(true);
         };
-        await audio.play();
-      } catch {
+
+        try {
+          await audio.play();
+        } catch (playErr) {
+          console.warn("TTS play() blocked (autoplay policy):", playErr);
+          setIsPlaying(false);
+        }
+      } catch (err) {
+        console.error("TTS generation failed:", err);
         setIsPlaying(false);
-        setChoicesVisible(true);
       }
     },
     [revokeBlobUrl],
   );
-
-  /** Stop turn-detection polling */
-  const stopTurnCheck = useCallback(() => {
-    if (turnCheckIntervalRef.current) {
-      clearInterval(turnCheckIntervalRef.current);
-      turnCheckIntervalRef.current = null;
-    }
-    turnConfirmCountRef.current = 0;
-    lastTurnCheckCoordsRef.current = null;
-  }, []);
 
   // Generate a chapter at the current intersection
   const triggerChapter = useCallback(
@@ -160,9 +132,7 @@ export default function ActiveRun() {
       const activeStreet = onStreet ?? currentStreetRef.current ?? street1;
 
       setIsGenerating(true);
-      setChoicesVisible(false);
       setChapterResult(null);
-      setPendingTurn(null);
       const chapterNumber = run.chapters.length + 1;
       try {
         const result = await generateChapter({
@@ -194,121 +164,12 @@ export default function ActiveRun() {
         await playTTS(result.chapterText);
       } catch (err) {
         setIsGenerating(false);
-        setChoicesVisible(true);
         setGeocodeError(
           err instanceof Error ? err.message : "Story generation failed.",
         );
       }
     },
     [run, gps.heading, storyHistory, playTTS],
-  );
-
-  /**
-   * Start polling GPS to detect when runner has physically turned onto the
-   * chosen street. Checks every 3.5 seconds.
-   * Detection triggers when EITHER:
-   *  - Nominatim confirms the runner is now on the chosen street (2 consecutive hits), OR
-   *  - The runner has moved 25m+ from the intersection and their heading matches
-   *    the chosen direction within ±45 degrees.
-   */
-  const startTurnDetection = useCallback(
-    (chosen: PendingTurn, intersectionCoord: GpsCoord) => {
-      stopTurnCheck();
-      turnConfirmCountRef.current = 0;
-
-      turnCheckIntervalRef.current = setInterval(async () => {
-        if (!gps.coords) return;
-
-        // Skip if coords haven't changed meaningfully
-        const last = lastTurnCheckCoordsRef.current;
-        if (last) {
-          const dLat = Math.abs(gps.coords.lat - last.lat);
-          const dLon = Math.abs(gps.coords.lon - last.lon);
-          if (dLat < 0.00002 && dLon < 0.00002) return; // <2m, skip
-        }
-        lastTurnCheckCoordsRef.current = { ...gps.coords };
-
-        // Method 1: Nominatim confirms current street matches chosen street
-        const onChosen = await isOnStreet(gps.coords, chosen.street);
-        if (onChosen) {
-          turnConfirmCountRef.current += 1;
-          if (turnConfirmCountRef.current >= 2) {
-            // Confirmed on the chosen street!
-            stopTurnCheck();
-            currentStreetRef.current = chosen.street;
-            const geo = await reverseGeocode(gps.coords);
-            const crossStreet =
-              geo.nearbyStreets[0] ?? geo.street ?? "the path ahead";
-            await triggerChapter(chosen.street, crossStreet, chosen.street);
-            return;
-          }
-        } else {
-          turnConfirmCountRef.current = 0;
-        }
-
-        // Method 2: Bearing-based detection as fallback
-        // If runner has moved 25m+ from intersection and heading changed
-        const trailSnapshot = gps.gpsTrail;
-        if (trailSnapshot.length >= 2) {
-          const recent = trailSnapshot.slice(-6);
-          const totalMoved = recent.reduce((sum, pt, i) => {
-            if (i === 0) return sum;
-            const prev = recent[i - 1];
-            const dLat2 = pt.lat - prev.lat;
-            const dLon2 = pt.lon - prev.lon;
-            return sum + Math.sqrt(dLat2 * dLat2 + dLon2 * dLon2) * 111320;
-          }, 0);
-
-          if (totalMoved >= 25 && trailSnapshot.length >= 4) {
-            const newHeading = calculateHeading(
-              trailSnapshot[trailSnapshot.length - 4],
-              trailSnapshot[trailSnapshot.length - 1],
-            );
-            // Check distance from the original intersection
-            const dLatI = gps.coords.lat - intersectionCoord.lat;
-            const dLonI = gps.coords.lon - intersectionCoord.lon;
-            const distFromIntersection =
-              Math.sqrt(dLatI * dLatI + dLonI * dLonI) * 111320;
-
-            if (
-              distFromIntersection >= 20 &&
-              newHeading !== choiceHeadingRef.current
-            ) {
-              // Heading has changed — assume they turned
-              stopTurnCheck();
-              currentStreetRef.current = chosen.street;
-              const geo = await reverseGeocode(gps.coords);
-              const crossStreet =
-                geo.nearbyStreets[0] ?? geo.street ?? "the path ahead";
-              await triggerChapter(chosen.street, crossStreet, chosen.street);
-            }
-          }
-        }
-      }, 3500);
-    },
-    [gps.coords, gps.gpsTrail, stopTurnCheck, triggerChapter],
-  );
-
-  // Handle a choice tap — records choice and starts waiting for the physical turn
-  const handleChoice = useCallback(
-    (choice: RunChoice) => {
-      if (isPlaying || isGenerating) return;
-      run.recordChoice(choice);
-      setChoicesVisible(false);
-      choiceHeadingRef.current = gps.heading;
-
-      const pending: PendingTurn = {
-        street: choice.streetName,
-        direction: choice.direction,
-        choiceSummary: choice.choiceSummary,
-      };
-      setPendingTurn(pending);
-
-      // Capture intersection coords at moment of choice
-      const intersectionCoord: GpsCoord = gps.coords ?? { lat: 0, lon: 0 };
-      startTurnDetection(pending, intersectionCoord);
-    },
-    [isPlaying, isGenerating, run, gps.heading, gps.coords, startTurnDetection],
   );
 
   // Start GPS when run begins
@@ -321,9 +182,8 @@ export default function ActiveRun() {
       stopTracking();
       if (intersectionCheckRef.current)
         clearInterval(intersectionCheckRef.current);
-      stopTurnCheck();
     };
-  }, [phase, startTracking, stopTracking, stopTurnCheck]);
+  }, [phase, startTracking, stopTracking]);
 
   // Append GPS points to run state
   const appendGpsPoint = run.appendGpsPoint;
@@ -359,20 +219,13 @@ export default function ActiveRun() {
     })();
   }, [phase, gps.coords, isGenerating, isPlaying, triggerChapter]);
 
-  // Intersection detection loop — every 7 seconds
-  // Paused while waiting for a turn (pendingTurn is set)
+  // Intersection detection loop — every 7 seconds, fully automatic
   const gpsTrail = gps.gpsTrail;
   useEffect(() => {
     if (phase !== "running") return;
     intersectionCheckRef.current = setInterval(async () => {
-      // Don't trigger new chapters while waiting for turn or already busy
-      if (
-        !gps.coords ||
-        runStatus !== "active" ||
-        isGenerating ||
-        isPlaying ||
-        pendingTurn !== null
-      )
+      // Don't trigger new chapters while already busy
+      if (!gps.coords || runStatus !== "active" || isGenerating || isPlaying)
         return;
       if (!isNearIntersection(gps.coords, gpsTrail)) return;
 
@@ -397,7 +250,6 @@ export default function ActiveRun() {
     runStatus,
     isGenerating,
     isPlaying,
-    pendingTurn,
     gpsTrail,
     triggerChapter,
   ]);
@@ -409,9 +261,8 @@ export default function ActiveRun() {
       if (audioRef.current) {
         audioRef.current.pause();
       }
-      stopTurnCheck();
     };
-  }, [revokeBlobUrl, stopTurnCheck]);
+  }, [revokeBlobUrl]);
 
   const handleStartRun = (genre: Genre) => {
     run.startRun(genre);
@@ -421,7 +272,6 @@ export default function ActiveRun() {
   const handleEndRun = () => {
     run.endRun();
     gps.stopTracking();
-    stopTurnCheck();
     if (audioRef.current) audioRef.current.pause();
     setIsPlaying(false);
     setPhase("save");
@@ -466,7 +316,6 @@ export default function ActiveRun() {
   const genreColor = GENRE_COLORS[genre];
   const genreBg = GENRE_BG_COLORS[genre];
   const genreGlow = GENRE_GLOW[genre];
-  const genreBtn = GENRE_BUTTON_COLORS[genre];
 
   const mins = Math.floor(run.elapsedSeconds / 60);
   const secs = run.elapsedSeconds % 60;
@@ -616,7 +465,7 @@ export default function ActiveRun() {
         )}
 
         {/* Empty / waiting state */}
-        {!isGenerating && !chapterResult && !gps.error && !pendingTurn && (
+        {!isGenerating && !chapterResult && !gps.error && (
           <div
             className="flex flex-col items-center gap-3 p-8 text-center"
             data-ocid="waiting-state"
@@ -657,7 +506,7 @@ export default function ActiveRun() {
                 Listening to your story…
               </p>
               <p className="text-xs text-muted-foreground">
-                Choices appear when narration ends
+                Keep running — next chapter triggers automatically
               </p>
             </div>
             <div className="ml-auto flex items-center gap-0.5">
@@ -671,85 +520,6 @@ export default function ActiveRun() {
                   }}
                 />
               ))}
-            </div>
-          </div>
-        )}
-
-        {/* Choice buttons — only visible after audio ends */}
-        {choicesVisible && chapterResult && (
-          <div
-            className="mx-4 mt-4 flex flex-col gap-3 animate-fade-in"
-            data-ocid="choice-panel"
-          >
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider text-center">
-              Choose your path
-            </p>
-            {[chapterResult.choice1, chapterResult.choice2].map((choice) => (
-              <button
-                key={choice.streetName}
-                type="button"
-                disabled={isPlaying || isGenerating}
-                onClick={() => handleChoice(choice)}
-                data-ocid={`choice-btn-${choice.direction}`}
-                className={`w-full min-h-[56px] rounded-xl px-5 py-4 flex items-center gap-3 font-display font-bold text-left transition-smooth active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${genreBtn}`}
-              >
-                <ChevronRight size={20} className="flex-shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-base leading-tight truncate">
-                    {choice.direction === "left" ? "← " : "→ "}
-                    {choice.streetName}
-                  </p>
-                  <p className="text-xs font-normal opacity-80 mt-0.5 line-clamp-2">
-                    {choice.choiceSummary}
-                  </p>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Waiting for turn indicator */}
-        {pendingTurn && !isGenerating && (
-          <div
-            className={`mx-4 mt-4 rounded-xl border px-4 py-4 flex items-start gap-3 ${genreBg} ${genreGlow}`}
-            data-ocid="turn-waiting-indicator"
-            aria-live="polite"
-          >
-            <Navigation
-              size={22}
-              className={`${genreColor} flex-shrink-0 mt-0.5 animate-pulse`}
-            />
-            <div className="min-w-0">
-              <p
-                className={`font-display font-bold text-sm ${genreColor} leading-tight`}
-              >
-                Keep running…
-              </p>
-              <p className="text-sm text-foreground mt-1 leading-snug">
-                Turn onto{" "}
-                <span className={`font-bold ${genreColor}`}>
-                  {pendingTurn.street}
-                </span>{" "}
-                to continue your adventure
-              </p>
-              <p className="text-xs text-muted-foreground mt-1.5 italic line-clamp-2">
-                "{pendingTurn.choiceSummary}"
-              </p>
-              <div className="flex items-center gap-1.5 mt-2.5">
-                {[0, 1, 2].map((i) => (
-                  <div
-                    key={i}
-                    className={`h-1.5 rounded-full ${genreColor.replace("text-", "bg-")} animate-pulse`}
-                    style={{
-                      width: i === 1 ? "24px" : "8px",
-                      animationDelay: `${i * 0.3}s`,
-                    }}
-                  />
-                ))}
-                <span className="text-xs text-muted-foreground ml-1">
-                  Detecting turn…
-                </span>
-              </div>
             </div>
           </div>
         )}

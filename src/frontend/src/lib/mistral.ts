@@ -162,5 +162,7 @@ export async function generateTTS(text: string): Promise<Blob> {
     throw new Error(`TTS API error: ${response.status} ${err}`);
   }
 
-  return response.blob();
+  // Use arrayBuffer → Blob with explicit MIME type so browsers can decode it
+  const buffer = await response.arrayBuffer();
+  return new Blob([buffer], { type: "audio/mpeg" });
 }
