@@ -94,11 +94,11 @@ export default function ActiveRun() {
         const url = URL.createObjectURL(blob);
         audioBlobUrlRef.current = url;
 
-        const audio = new Audio();
+        const audio = new Audio(url);
 
-        audio.src = url;
+        
 audio.controls= true
-
+consolr.log(url)
         audio.onended = () => {
           setIsPlaying(false);
           URL.revokeObjectURL(url);
