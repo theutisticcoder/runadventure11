@@ -177,5 +177,5 @@ export async function generateTTS(text: string): Promise<ArrayBuffer> {
   if (arrayBuffer.byteLength === 0) {
     throw new Error("TTS returned empty audio buffer");
   }
-  return arrayBuffer.audio_data;
+  return arrayBuffer;
 }
