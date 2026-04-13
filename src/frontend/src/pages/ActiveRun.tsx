@@ -100,14 +100,14 @@ export default function ActiveRun() {
     try {
       console.log("[TTS] Fetching audio buffer…");
       const buffer = await generateTTS(text);
-      var blob = new Blob([buffer], { type: "audio/mpeg" })
+      var blob = new Blob([buffer], { type: "audio/mp3" })
       var url = URL.createObjectURL(blob)
       // Ensure AudioContext exists and is running
       console.log(buffer, url)
       var au = new Audio();
       au.src = url
       au.controls = true;
-        document.body.appendChild(au)
+      document.body.appendChild(au)
       
 
 
