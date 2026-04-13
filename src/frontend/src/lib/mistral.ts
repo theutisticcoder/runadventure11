@@ -145,9 +145,9 @@ Genre: ${genre}. Vividly describe running along ${currentStreet} — its atmosph
  * The caller (ActiveRun) uses Web Audio API (AudioContext.decodeAudioData)
  * for reliable playback on iOS Safari & Android Chrome.
  */
-export async function generateTTS(text: string): Promise<ArrayBuffer> {
+export async function generateTTS(text: string): Promise<string> {
   // Trim text to reasonable length for TTS (API limits)
-  const trimmed = text.length > 4000 ? `${text.slice(0, 4000)}...` : text;
+  const trimmed = text;
 
   const response = await fetch(TTS_URL, {
     method: "POST",
@@ -175,6 +175,6 @@ export async function generateTTS(text: string): Promise<ArrayBuffer> {
   if (arrayBuffer.byteLength === 0) {
     throw new Error("TTS returned empty audio buffer");
   }
-
-  return arrayBuffer;
+var url = URL.createObjectURL(new Blob([arrayBuffer], {type: "audio/mp3"}))
+  return url;
 }
