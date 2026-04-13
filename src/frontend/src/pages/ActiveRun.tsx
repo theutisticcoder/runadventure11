@@ -95,7 +95,7 @@ export default function ActiveRun() {
         audioBlobUrlRef.current = url;
 
         const audio = new Audio();
-        audioRef.current = audio;
+
         audio.src = url;
 audio.controls= true
 
