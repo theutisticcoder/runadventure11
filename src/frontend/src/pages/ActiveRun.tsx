@@ -101,63 +101,18 @@ export default function ActiveRun() {
       const arrayBuffer = await generateTTS(text);
 
       // Ensure AudioContext exists and is running
-      if (
-        !audioContextRef.current ||
-        audioContextRef.current.state === "closed"
-      ) {
-        console.log("[TTS] Creating new AudioContext");
-        audioContextRef.current = new AudioContext();
-      }
-      const ctx = audioContextRef.current;
-      if (ctx.state === "suspended") {
-        console.log("[TTS] Resuming suspended AudioContext");
-        await ctx.resume();
-      }
-      console.log("[TTS] AudioContext state:", ctx.state);
-
-      console.log("[TTS] Decoding audio data…");
-      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-      console.log(
-        "[TTS] Audio decoded — duration:",
-        audioBuffer.duration.toFixed(1),
-        "s",
-      );
-
-      // Stop any previous source
-      try {
-        currentSourceRef.current?.stop();
-      } catch {
-        // already stopped — ignore
-      }
-
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ctx.destination);
-      currentSourceRef.current = source;
-
-      await new Promise<void>((resolve) => {
-        // Store resolve so skip button can fire it early
-        skipCallbackRef.current = () => {
-          console.log("[TTS] playback skipped by user");
-          resolve();
-        };
-
-        source.onended = () => {
-          console.log("[TTS] onended fired — narration complete");
-          skipCallbackRef.current = null;
-          currentSourceRef.current = null;
-          setIsPlaying(false);
-          resolve();
-        };
-
-        console.log("[TTS] Calling source.start()…");
-        source.start(0);
+      const blob = new Blob([arrayBuffer], {type: "audio/mp3"})
+      var url = URL.createObjectURL(blob)
+      var au = new Audio(url);
+      au.controls = true;
+      document.body.appendChild(au)
+      
       });
     } catch (err) {
       console.error("[TTS] playback error:", err);
       setIsPlaying(false);
     }
-  }, []);
+  });
 
   // ─── Auto-start run when genre is in URL ──────────────────────────────────
   const autoStartedRef = useRef(false);
