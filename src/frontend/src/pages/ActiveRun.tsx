@@ -104,11 +104,11 @@ export default function ActiveRun() {
       var url = URL.createObjectURL(blob)
       // Ensure AudioContext exists and is running
       console.log(buffer, url)
-      var au = new Audio(url);
+      var au = new Audio();
+      au.src = url
       au.controls = true;
-      au.onload = () => {
         document.body.appendChild(au)
-      }
+      
 
 
 
