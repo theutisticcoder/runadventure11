@@ -91,9 +91,9 @@ export default function ActiveRun() {
       try {
         const url = await generateTTS(text);
         
-        const audio = new Audio(url);
+        const audio = new Audio()
 
-        
+        audio.src = url
 audio.controls= true
 consolr.log(url)
         audio.onended = () => {
