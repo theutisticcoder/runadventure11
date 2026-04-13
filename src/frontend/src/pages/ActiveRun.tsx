@@ -102,7 +102,7 @@ export default function ActiveRun() {
       const buffer = await generateTTS(text);
 var url = URL.createObjectURL(new Blob([buffer], {type:"audio/mp3"}))
       // Ensure AudioContext exists and is running
-      
+      console.log(buffer, url)
       var au = new Audio(url);
       au.controls = true;
 au.onload = ()=>{
