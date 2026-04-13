@@ -94,7 +94,7 @@ export default function ActiveRun() {
   // ArrayBuffer → AudioContext.decodeAudioData → createBufferSource().start()
   // This approach works reliably on iOS Safari and Android Chrome where
   // HTMLAudioElement.play() throws NotSupportedError (code 9).
-  const playTTS = useCallback(async (text: string): Promise<void> => {
+  const playTTS = async (text: string) => {
     setIsPlaying(true);
     try {
       console.log("[TTS] Fetching audio buffer…");
@@ -169,7 +169,7 @@ export default function ActiveRun() {
             block: "start",
           });
         }, 200);
-        await playTTS(result.chapterText);
+        playTTS(result.chapterText);
       } catch (err) {
         setIsGenerating(false);
         setGeocodeError(
