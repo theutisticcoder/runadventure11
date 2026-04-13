@@ -97,7 +97,6 @@ export default function ActiveRun() {
         const audio = new Audio();
         audioRef.current = audio;
         audio.src = url;
-        audio.load();
 audio.controls= true
 
         audio.onended = () => {
