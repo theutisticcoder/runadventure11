@@ -105,9 +105,8 @@ export default function ActiveRun() {
       var au = new Audio();
       au.src = url
       au.controls = true;
-      au.onload = () => {
         document.body.appendChild(au)
-      }
+      
 
 
 
