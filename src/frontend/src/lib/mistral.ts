@@ -152,7 +152,7 @@ export async function generateTTS(text: string): Promise<ArrayBuffer> {
   const response = await fetch(TTS_URL, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": "audio/mpeg",
       Authorization: `Bearer ${MISTRAL_API_KEY}`,
     },
     body: JSON.stringify({
