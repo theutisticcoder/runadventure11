@@ -7,37 +7,37 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from “@/components/ui/alert-dialog”;
-import { Badge } from “@/components/ui/badge”;
-import { Button } from “@/components/ui/button”;
-import { useNavigate, useParams } from “@tanstack/react-router”;
-import { Compass, Pause, Play, Square, Volume2, VolumeX } from “lucide - react”;
-import { AnimatePresence, motion } from “motion / react”;
-import { useCallback, useEffect, useRef, useState } from “react”;
-import { Genre as BackendGenre, Direction } from “../backend.d”;
-import { ChoiceButton } from “../components/ChoiceButton”;
-import { RunStatsBar } from “../components/RunStatsBar”;
-import { StoryPanel } from “../components/StoryPanel”;
-import { useAuth } from “../hooks/use - auth”;
-import { useBackend } from “../hooks/use - backend”;
-import { useRunActive } from “../hooks/use - run - active”;
-import type { Genre, StoryNode } from “../types”;
+} from "@/components/ui/alert-dialog”;
+import { Badge } from "@/components/ui/badge”;
+import { Button } from "@/components/ui/button”;
+import { useNavigate, useParams } from "@tanstack/react-router”;
+import { Compass, Pause, Play, Square, Volume2, VolumeX } from "lucide - react”;
+import { AnimatePresence, motion } from "motion / react”;
+import { useCallback, useEffect, useRef, useState } from "react”;
+import { Genre as BackendGenre, Direction } from "../backend.d”;
+import { ChoiceButton } from "../components/ChoiceButton”;
+import { RunStatsBar } from "../components/RunStatsBar”;
+import { StoryPanel } from "../components/StoryPanel”;
+import { useAuth } from "../hooks/use - auth”;
+import { useBackend } from "../hooks/use - backend”;
+import { useRunActive } from "../hooks/use - run - active”;
+import type { Genre, StoryNode } from "../types”;
 
 const INF = Number.POSITIVE_INFINITY;
 
 // ── Genre label map ───────────────────────────────────────────────────────────
 const GENRE_LABEL: Record<string, string> = {
-  Fantasy: “Fantasy”,
-  SciFi: “Sci- Fi”,
-  Thriller: “Thriller”,
-  Comedy: “Comedy”,
-  Horror: “Horror”,
-  fantasy: “Fantasy”,
-  scifi: “Sci-Fi”,
-thriller: “Thriller”,
-comedy: “Comedy”,
-horror: “Horror”,
-mystery: “Mystery”,
+  Fantasy: "Fantasy”,
+  SciFi: "Sci- Fi”,
+  Thriller: "Thriller”,
+  Comedy: "Comedy”,
+  Horror: "Horror”,
+  fantasy: "Fantasy”,
+  scifi: "Sci-Fi”,
+thriller: "Thriller”,
+comedy: "Comedy”,
+horror: "Horror”,
+mystery: "Mystery”,
 };
 
 // ── Static map URL builder ────────────────────────────────────────────────────
@@ -72,11 +72,11 @@ function LocationPin({ className }: { className?: string }) {
 }
 
 // ── GPS Map Component ─────────────────────────────────────────────────────────
-const GPS_DOTS = [“gps - dot - 0”, “gps - dot - 1”, “gps - dot - 2”] as const;
+const GPS_DOTS = ["gps - dot - 0”, "gps - dot - 1”, "gps - dot - 2”] as const;
 const GPS_DOT_DELAYS: Record<string, number> = {
-“gps - dot - 0”: 0,
-“gps - dot - 1”: 0.2,
-“gps - dot - 2”: 0.4,
+"gps - dot - 0”: 0,
+"gps - dot - 1”: 0.2,
+"gps - dot - 2”: 0.4,
 };
 
 function RunMap({
@@ -104,18 +104,18 @@ function RunMap({
 <div className="absolute inset-0 map-grid flex flex-col items-center justify-center gap-3">
 <motion.div
 animate={{ rotate: 360 }}
-transition={{ duration: 8, repeat: INF, ease: “linear” }}
+transition={{ duration: 8, repeat: INF, ease: "linear” }}
 >
 <Compass size={52} className="text-accent/50" />
 </motion.div>
 <p className="font-display text-xs uppercase tracking-widest text-muted-foreground">
-{hasGps ? “Loading map…” : “Acquiring GPS signal…”}
+{hasGps ? "Loading map…” : "Acquiring GPS signal…”}
 </p>
 <div className="flex gap-1.5 mt-1">
 {GPS_DOTS.map((key) => (
 <motion.span
 key={key}
-className=“w-1.5 h-1.5 rounded-full bg-accent/40”
+className="w-1.5 h-1.5 rounded-full bg-accent/40”
 animate={{ opacity: [0.3, 1, 0.3] }}
 transition={{
 duration: 1.2,
@@ -134,24 +134,24 @@ repeat: INF,
       <img
         ref={imgRef}
         src={mapSrc}
-        alt=“OpenStreetMap showing current run location”
-      className=“w-full h-full object-cover opacity-85”
+        alt="OpenStreetMap showing current run location”
+      className="w-full h-full object-cover opacity-85”
       onError={() => setMapError(true)}
-      style={{ filter: “brightness(0.75) saturate(0.8)” }}
+      style={{ filter: "brightness(0.75) saturate(0.8)” }}
 />
       {/* Vignette for immersive overlay */}
       <div
-        className=“absolute inset-0 pointer-events-none”
+        className="absolute inset-0 pointer-events-none”
       style={{
         background:
-“radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%)”,
+"radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%)”,
 }}
 />
       {/* Current location marker — centered */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <motion.div
           animate={{ y: [0, -4, 0] }}
-          transition={{ duration: 2, repeat: INF, ease: “easeInOut” }}
+          transition={{ duration: 2, repeat: INF, ease: "easeInOut” }}
         style={{ marginTop: -18 }}
 >
         <LocationPin />
@@ -160,9 +160,9 @@ repeat: INF,
 {/* GPS accuracy pulse ring */ }
   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
     <motion.div
-      className=“rounded-full border-2 border-primary/40”
+      className="rounded-full border-2 border-primary/40”
     animate={{ scale: [1, 2.5, 1], opacity: [0.6, 0, 0.6] }}
-    transition={{ duration: 2.5, repeat: INF, ease: “easeOut” }}
+    transition={{ duration: 2.5, repeat: INF, ease: "easeOut” }}
     style={{ width: 24, height: 24 }}
 />
   </div>
@@ -172,11 +172,11 @@ repeat: INF,
 
 // ── TTS Narrating overlay ─────────────────────────────────────────────────────
 const WAVE_BARS = [
-  { key: “bar- 0”, height: 0.6, delay: 0 },
-{ key: “bar - 1”, height: 1, delay: 0.1 },
-{ key: “bar - 2”, height: 0.7, delay: 0.2 },
-{ key: “bar - 3”, height: 1, delay: 0.3 },
-{ key: “bar - 4”, height: 0.5, delay: 0.4 },
+  { key: "bar- 0”, height: 0.6, delay: 0 },
+{ key: "bar - 1”, height: 1, delay: 0.1 },
+{ key: "bar - 2”, height: 0.7, delay: 0.2 },
+{ key: "bar - 3”, height: 1, delay: 0.3 },
+{ key: "bar - 4”, height: 0.5, delay: 0.4 },
 ];
 
 function NarratingBadge() {
@@ -185,16 +185,16 @@ function NarratingBadge() {
       initial={{ opacity: 0, scale: 0.9 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.9 }}
-      className=“ flex items-center gap-2 bg-accent /20 border border - accent / 40 rounded - full px - 3 py - 1.5”
+      className=" flex items-center gap-2 bg-accent /20 border border - accent / 40 rounded - full px - 3 py - 1.5”
 >
 <div className="flex gap-0.5 items-end h-4">
 {WAVE_BARS.map(({ key, height, delay }) => (
 <motion.span
 key={key}
-className=“w-0.5 rounded-full bg-accent”
+className="w-0.5 rounded-full bg-accent”
 animate={{ scaleY: [height, 1, height] }}
 transition={{ duration: 0.6, delay, repeat: INF }}
-style={{ height: “100%”, transformOrigin: “bottom” }}
+style={{ height: "100%”, transformOrigin: "bottom” }}
 />
 ))}
 </div>
@@ -207,14 +207,14 @@ Narrating…
 
 // ── Spinner dots ──────────────────────────────────────────────────────────────
 const SPIN_DOTS = [
-  { key: “sd- 0”, delay: 0 },
-{ key: “sd - 1”, delay: 0.15 },
-{ key: “sd - 2”, delay: 0.3 },
+  { key: "sd- 0”, delay: 0 },
+{ key: "sd - 1”, delay: 0.15 },
+{ key: "sd - 2”, delay: 0.3 },
 ];
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function ActiveRunPage() {
-  const { runId } = useParams({ from: “/ run / $runId” });
+  const { runId } = useParams({ from: "/ run / $runId” });
 const navigate = useNavigate();
 const { backend } = useBackend();
 const { principal } = useAuth();
@@ -234,7 +234,7 @@ const {
 
 const [isStarted, setIsStarted] = useState(false);
 const [showEndDialog, setShowEndDialog] = useState(false);
-const [genre, setGenre] = useState<Genre>(“fantasy” as Genre);
+const [genre, setGenre] = useState<Genre>("fantasy” as Genre);
 
 // Prevent double-generating
 const generatingRef = useRef(false);
@@ -859,24 +859,24 @@ createdAt: bigint;
 }): StoryNode {
 return {
 id: String(node.id),
-runId: “”,
+runId: "”,
 nodeIndex: 0,
 narrativeText: node.narrative,
 choices: node.choices.map((c) => ({
 id: String(c.id),
 direction: c.direction.toLowerCase() as
-| “left”
-| “right”
-| “straight”
-| “back”,
+| "left”
+| "right”
+| "straight”
+| "back”,
 label: c.text,
-previewText: “”,
+previewText: "”,
 })),
 intersection: node.intersection
 ? {
 lat: node.intersection.coords.lat,
 lng: node.intersection.coords.lon,
-streetName: node.intersection.streetNames.join(” & “),
+streetName: node.intersection.streetNames.join(” & "),
 approachBearing: 0,
 distanceFromRunner: 0,
 }
