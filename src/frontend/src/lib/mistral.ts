@@ -170,7 +170,7 @@ export async function generateTTS(text: string): Promise<ArrayBuffer> {
   }
 
   const data = await response.json();
-    const arrayBuffer = Buffer.from(data.audio_data, 'base64');
+    const arrayBuffer = new ArrayBuffer(data.audio_data);
   console.log(arrayBuffer)
   console.log(response)
   
