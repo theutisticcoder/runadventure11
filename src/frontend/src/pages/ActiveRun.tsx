@@ -1,567 +1,886 @@
-
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
-import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
-  AlertTriangle,
-  MapPin,
-  Pause,
-  Play,
-  SkipForward,
-  Square,
-  Swords,
-  Volume2,
-} from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useBackend } from "../hooks/useBackend";
-import { useGps } from "../hooks/useGps";
-import { useRun } from "../hooks/useRun";
-import { isNearIntersection } from "../lib/gps";
-import { generateChapter, generateTTS } from "../lib/mistral";
-import { reverseGeocode } from "../lib/nominatim";
-import type { ChapterResult, Genre } from "../lib/types";
-import { GENRE_BG_COLORS, GENRE_COLORS, GENRE_GLOW } from "../lib/types";
-import GenreSelector from "./activerun/GenreSelector";
-import RunMap from "./activerun/RunMap";
-import SaveRunModal from "./activerun/SaveRunModal";
+AlertDialog,
+AlertDialogAction,
+AlertDialogCancel,
+AlertDialogContent,
+AlertDialogDescription,
+AlertDialogFooter,
+AlertDialogHeader,
+AlertDialogTitle,
+} from “@/components/ui/alert-dialog”;
+import { Badge } from “@/components/ui/badge”;
+import { Button } from “@/components/ui/button”;
+import { useNavigate, useParams } from “@tanstack/react-router”;
+import { Compass, Pause, Play, Square, Volume2, VolumeX } from “lucide-react”;
+import { AnimatePresence, motion } from “motion/react”;
+import { useCallback, useEffect, useRef, useState } from “react”;
+import { Genre as BackendGenre, Direction } from “../backend.d”;
+import { ChoiceButton } from “../components/ChoiceButton”;
+import { RunStatsBar } from “../components/RunStatsBar”;
+import { StoryPanel } from “../components/StoryPanel”;
+import { useAuth } from “../hooks/use-auth”;
+import { useBackend } from “../hooks/use-backend”;
+import { useRunActive } from “../hooks/use-run-active”;
+import type { Genre, StoryNode } from “../types”;
 
-type RunPhase = "genre-select" | "running" | "save";
+const INF = Number.POSITIVE_INFINITY;
 
-export default function ActiveRun() {
-  const navigate = useNavigate();
-  const { genre: urlGenre } = useSearch({ from: "/run" });
-  const [phase, setPhase] = useState<RunPhase>(
-    urlGenre ? "running" : "genre-select",
-  );
-  const [chapterResult, setChapterResult] = useState<ChapterResult | null>(
-    null,
-  );
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [storyHistory, setStoryHistory] = useState<string[]>([]);
-  const [geocodeError, setGeocodeError] = useState<string | null>(null);
-  const [saveSlug, setSaveSlug] = useState<string | null>(null);
+// ── Genre label map ───────────────────────────────────────────────────────────
+const GENRE_LABEL: Record<string, string> = {
+Fantasy: “Fantasy”,
+SciFi: “Sci-Fi”,
+Thriller: “Thriller”,
+Comedy: “Comedy”,
+Horror: “Horror”,
+fantasy: “Fantasy”,
+scifi: “Sci-Fi”,
+thriller: “Thriller”,
+comedy: “Comedy”,
+horror: “Horror”,
+mystery: “Mystery”,
+};
 
-  // Web Audio API — most reliable approach for mobile browsers (iOS Safari, Android Chrome)
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  // Callback to resolve/skip the current playback promise early (skip narration)
-  const skipCallbackRef = useRef<(() => void) | null>(null);
-
-  const intersectionCheckRef = useRef<ReturnType<typeof setInterval> | null>(
-    null,
-  );
-  const lastIntersectionRef = useRef<string>("");
-  const chapterTextRef = useRef<HTMLDivElement>(null);
-  const hasGeneratedOpeningChapterRef = useRef(false);
-  const currentStreetRef = useRef<string>("");
-
-  const run = useRun();
-  const gps = useGps();
-  const { saveRun, isSaving } = useBackend();
-
-  // ─── Clean up AudioContext on unmount ────────────────────────────────────
-  useEffect(() => {
-    return () => {
-      currentSourceRef.current?.stop();
-      audioContextRef.current?.close();
-      audioContextRef.current = null;
-    };
-  }, []);
-
-  // ─── Stop any in-progress narration ───────────────────────────────────────
-  const stopNarration = useCallback(() => {
-    try {
-      currentSourceRef.current?.stop();
-    } catch {
-      // source may already be stopped — safe to ignore
-    }
-    currentSourceRef.current = null;
-    // Fire skip callback so downstream state cleans up
-    if (skipCallbackRef.current) {
-      skipCallbackRef.current();
-      skipCallbackRef.current = null;
-    }
-    setIsPlaying(false);
-  }, []);
-
-  // ─── Skip narration button handler ────────────────────────────────────────
-  const handleSkipNarration = useCallback(() => {
-    stopNarration();
-  }, [stopNarration]);
-
-  // ─── Play TTS using Web Audio API ────────────────────────────────────────
-  // ArrayBuffer → AudioContext.decodeAudioData → createBufferSource().start()
-  // This approach works reliably on iOS Safari and Android Chrome where
-  // HTMLAudioElement.play() throws NotSupportedError (code 9).
-  const playTTS = async (text: string) => {
-    setIsPlaying(true);
-    try {
-      console.log("[TTS] Fetching audio buffer…");
-      var url = await generateTTS(text);
-     url = "data:audio/mpeg;base64," + url;
-
-      var au = new Audio();
-      au.src = url
-      au.controls = true;
-        document.body.appendChild(au)
-      
-
-
-
-    } catch (err) {
-      console.error("[TTS] playback error:", err);
-      setIsPlaying(false);
-    }
-  }
-
-  // ─── Auto-start run when genre is in URL ──────────────────────────────────
-  const autoStartedRef = useRef(false);
-  const startRun = run.startRun;
-  useEffect(() => {
-    if (autoStartedRef.current) return;
-    if (!urlGenre) return;
-    autoStartedRef.current = true;
-    const validGenres: Genre[] = [
-      "Fantasy",
-      "SciFi",
-      "Horror",
-      "Mystery",
-      "Romance",
-    ];
-    const genre = validGenres.includes(urlGenre as Genre)
-      ? (urlGenre as Genre)
-      : "Fantasy";
-    startRun(genre);
-  }, [urlGenre, startRun]);
-
-  // ─── Generate a chapter at the current intersection ───────────────────────
-  const triggerChapter = useCallback(
-    async (street1: string, street2: string, onStreet?: string) => {
-      if (!run.genre) return;
-
-      const activeStreet = onStreet ?? currentStreetRef.current ?? street1;
-
-      setIsGenerating(true);
-      setChapterResult(null);
-      const chapterNumber = run.chapters.length + 1;
-      try {
-        const result = await generateChapter({
-          streetName1: street1,
-          streetName2: street2,
-          currentStreet: activeStreet,
-          direction: gps.heading,
-          genre: run.genre,
-          storyHistory,
-          chapterNumber,
-        });
-        setChapterResult(result);
-        setStoryHistory((prev) => [...prev, result.chapterText]);
-        run.addChapter({
-          text: result.chapterText,
-          streetName1: street1,
-          streetName2: street2,
-          direction: gps.heading,
-          choiceIndex: -1,
-        });
-        setIsGenerating(false);
-        setTimeout(() => {
-          chapterTextRef.current?.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          });
-        }, 200);
-        playTTS(result.chapterText);
-      } catch (err) {
-        setIsGenerating(false);
-        setGeocodeError(
-          err instanceof Error ? err.message : "Story generation failed.",
-        );
-      }
-    },
-    [run, gps.heading, storyHistory, playTTS],
-  );
-
-  // ─── Start GPS when run begins ────────────────────────────────────────────
-  const startTracking = gps.startTracking;
-  const stopTracking = gps.stopTracking;
-  useEffect(() => {
-    if (phase !== "running") return;
-    startTracking();
-    return () => {
-      stopTracking();
-      if (intersectionCheckRef.current)
-        clearInterval(intersectionCheckRef.current);
-    };
-  }, [phase, startTracking, stopTracking]);
-
-  // ─── Append GPS points to run state ───────────────────────────────────────
-  const appendGpsPoint = run.appendGpsPoint;
-  const runStatus = run.runStatus;
-  useEffect(() => {
-    if (gps.coords && phase === "running" && runStatus === "active") {
-      appendGpsPoint(gps.coords);
-    }
-  }, [gps.coords, phase, runStatus, appendGpsPoint]);
-
-  // ─── Opening chapter on first GPS fix ─────────────────────────────────────
-  useEffect(() => {
-    if (phase !== "running") return;
-    if (!gps.coords) return;
-    if (hasGeneratedOpeningChapterRef.current) return;
-    if (isGenerating || isPlaying) return;
-    hasGeneratedOpeningChapterRef.current = true;
-
-    (async () => {
-      try {
-        const geo = await reverseGeocode(gps.coords!);
-        const allStreets = [geo.street, ...geo.nearbyStreets].filter(Boolean);
-        const street1 = allStreets[0] ?? "the starting line";
-        const street2 = allStreets[1] ?? "the open road";
-        currentStreetRef.current = street1;
-        lastIntersectionRef.current = `${street1}|${street2}`;
-        await triggerChapter(street1, street2, street1);
-      } catch {
-        hasGeneratedOpeningChapterRef.current = false;
-      }
-    })();
-  }, [phase, gps.coords, isGenerating, isPlaying, triggerChapter]);
-
-  // ─── Intersection detection loop — every 7 seconds ───────────────────────
-  const gpsTrail = gps.gpsTrail;
-  useEffect(() => {
-    if (phase !== "running") return;
-    intersectionCheckRef.current = setInterval(async () => {
-      if (!gps.coords || runStatus !== "active" || isGenerating || isPlaying)
-        return;
-      if (!isNearIntersection(gps.coords, gpsTrail)) return;
-
-      const geo = await reverseGeocode(gps.coords);
-      const allStreets = [geo.street, ...geo.nearbyStreets].filter(Boolean);
-      if (allStreets.length < 2) return;
-
-      const key = `${allStreets[0]}|${allStreets[1]}`;
-      if (key === lastIntersectionRef.current) return;
-      lastIntersectionRef.current = key;
-
-      currentStreetRef.current = allStreets[0];
-      await triggerChapter(allStreets[0], allStreets[1], allStreets[0]);
-    }, 7000);
-    return () => {
-      if (intersectionCheckRef.current)
-        clearInterval(intersectionCheckRef.current);
-    };
-  }, [
-    phase,
-    gps.coords,
-    runStatus,
-    isGenerating,
-    isPlaying,
-    gpsTrail,
-    triggerChapter,
-  ]);
-
-  // ─── Start Run handler ────────────────────────────────────────────────────
-  // Create (or resume) the AudioContext on the user gesture so the browser
-  // autoplay policy is satisfied before the first TTS call.
-  const handleStartRun = (genre: Genre) => {
-    if (
-      !audioContextRef.current ||
-      audioContextRef.current.state === "closed"
-    ) {
-      audioContextRef.current = new AudioContext();
-      console.log("[TTS] AudioContext created on user gesture");
-    }
-    if (audioContextRef.current.state === "suspended") {
-      audioContextRef.current.resume().then(() => {
-        console.log("[TTS] AudioContext resumed on user gesture");
-      });
-    }
-    run.startRun(genre);
-    setPhase("running");
-  };
-
-  const handleEndRun = () => {
-    run.endRun();
-    gps.stopTracking();
-    stopNarration();
-    setPhase("save");
-  };
-
-  const handleSaveRun = async (title: string) => {
-    if (!run.genre) return;
-    const slug = await saveRun({
-      title,
-      genre: run.genre,
-      chapters: run.chapters,
-      choices: run.choices.map((c) => c.choiceSummary),
-      gpsRoute: run.gpsTrail,
-      startTime: run.startedAt ?? Date.now(),
-      endTime: run.endedAt ?? Date.now(),
-      totalDistance: run.distance,
-    });
-    setSaveSlug(slug);
-    navigate({ to: "/story/$slug", params: { slug } });
-  };
-
-  // ─── Genre select screen ──────────────────────────────────────────────────
-  if (phase === "genre-select") {
-    return <GenreSelector onStart={handleStartRun} />;
-  }
-
-  // ─── Save screen ──────────────────────────────────────────────────────────
-  if (phase === "save") {
-    return (
-      <SaveRunModal
-        run={run}
-        isSaving={isSaving}
-        saveSlug={saveSlug}
-        onSave={handleSaveRun}
-        onDiscard={() => navigate({ to: "/" })}
-      />
-    );
-  }
-
-  // ─── Active run screen ────────────────────────────────────────────────────
-  const genre = run.genre ?? "Fantasy";
-  const genreColor = GENRE_COLORS[genre];
-  const genreBg = GENRE_BG_COLORS[genre];
-  const genreGlow = GENRE_GLOW[genre];
-
-  const mins = Math.floor(run.elapsedSeconds / 60);
-  const secs = run.elapsedSeconds % 60;
-  const timeStr = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-  const distKm = (run.distance / 1000).toFixed(2);
-
-  return (
-    <div className="flex-1 flex flex-col bg-background min-h-0 overflow-hidden">
-      {/* GPS permission error */}
-      {gps.error && (
-        <div
-          className="flex items-start gap-3 p-4 bg-destructive/10 border-b border-destructive/30 text-sm"
-          data-ocid="gps-error-banner"
-        >
-          <AlertTriangle
-            size={18}
-            className="text-destructive mt-0.5 flex-shrink-0"
-          />
-          <div className="min-w-0">
-            <p className="font-semibold text-destructive">GPS Unavailable</p>
-            <p className="text-muted-foreground mt-0.5">{gps.error}</p>
-            <p className="text-muted-foreground mt-1">
-              To enable:{" "}
-              <strong>
-                Settings → Privacy → Location Services → RunQuest → While Using
-              </strong>
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Map */}
-      <div
-        className="h-[40vh] min-h-[220px] w-full relative"
-        data-ocid="run-map"
-      >
-        <RunMap
-          coords={gps.coords}
-          trail={gps.gpsTrail}
-          chapterPoints={run.chapters.map((_ch, i) => ({
-            lat: run.gpsTrail[i * 10]
-              ? run.gpsTrail[i * 10].lat
-              : (run.gpsTrail[run.gpsTrail.length - 1]?.lat ?? 0),
-            lon: run.gpsTrail[i * 10]
-              ? run.gpsTrail[i * 10].lon
-              : (run.gpsTrail[run.gpsTrail.length - 1]?.lon ?? 0),
-          }))}
-        />
-        {/* Genre badge overlay */}
-        <div className="absolute top-3 left-3 z-[500]">
-          <Badge
-            className={`font-display font-bold tracking-widest text-xs px-2.5 py-1 border ${genreBg} ${genreColor} uppercase`}
-            data-ocid="genre-badge"
-          >
-            {genre} RUN
-          </Badge>
-        </div>
-        {/* Stats bar overlay */}
-        <div
-          className="absolute bottom-0 left-0 right-0 z-[500] bg-background/80 backdrop-blur-sm border-t border-border/40 px-4 py-2 flex items-center justify-between"
-          data-ocid="run-stats"
-        >
-          <StatCell label="DIST" value={`${distKm} km`} />
-          <StatCell label="TIME" value={timeStr} />
-          <StatCell label="CHAPTERS" value={String(run.chapters.length)} />
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={
-                run.runStatus === "paused" ? run.resumeRun : run.pauseRun
-              }
-              className="min-h-[44px] min-w-[44px] px-3 border-border/60 text-xs gap-1.5"
-              data-ocid="pause-resume-btn"
-            >
-              {run.runStatus === "paused" ? (
-                <Play size={14} />
-              ) : (
-                <Pause size={14} />
-              )}
-              {run.runStatus === "paused" ? "Resume" : "Pause"}
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleEndRun}
-              className="min-h-[44px] min-w-[44px] px-3 text-xs gap-1.5"
-              data-ocid="end-run-btn"
-            >
-              <Square size={14} />
-              End
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {/* Story panel */}
-      <div className="flex-1 flex flex-col overflow-y-auto overscroll-contain pb-4">
-        {/* Generation loading */}
-        {isGenerating && (
-          <div
-            className="flex flex-col items-center gap-4 p-8 text-center"
-            data-ocid="chapter-loading"
-          >
-            <div
-              className={`w-16 h-16 rounded-full border-4 border-t-transparent ${genreColor.replace("text-", "border-")} animate-spin`}
-              role="status"
-              aria-label="Generating chapter"
-            />
-            <div>
-              <p className={`font-display font-bold text-lg ${genreColor}`}>
-                The Story Unfolds…
-              </p>
-              <p className="text-muted-foreground text-sm mt-1">
-                Weaving your adventure through these streets
-              </p>
-            </div>
-            <div className="w-full max-w-sm space-y-2">
-              <Skeleton className="h-4 w-full" />
-              <Skeleton className="h-4 w-5/6" />
-              <Skeleton className="h-4 w-4/6" />
-            </div>
-          </div>
-        )}
-
-        {/* Chapter text */}
-        {!isGenerating && chapterResult && (
-          <div
-            ref={chapterTextRef}
-            className={`mx-4 mt-4 rounded-xl border p-4 ${genreBg} ${genreGlow} transition-smooth`}
-            data-ocid="chapter-panel"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <p className={`font-display font-bold text-base ${genreColor}`}>
-                Chapter {run.chapters.length}
-              </p>
-              <Badge variant="secondary" className="text-xs">
-                <MapPin size={10} className="mr-1" />
-                {chapterResult.choice1.streetName} &amp;{" "}
-                {chapterResult.choice2.streetName}
-              </Badge>
-            </div>
-            <p className="text-foreground text-base leading-relaxed whitespace-pre-wrap break-words">
-              {chapterResult.chapterText}
-            </p>
-          </div>
-        )}
-
-        {/* Empty / waiting state */}
-        {!isGenerating && !chapterResult && !gps.error && (
-          <div
-            className="flex flex-col items-center gap-3 p-8 text-center"
-            data-ocid="waiting-state"
-          >
-            <Swords size={36} className={`${genreColor} opacity-60`} />
-            <p className={`font-display font-bold text-lg ${genreColor}`}>
-              Your Adventure Awaits
-            </p>
-            <p className="text-muted-foreground text-sm max-w-xs">
-              {gps.coords
-                ? "Summoning your opening chapter…"
-                : "Acquiring GPS signal — your story begins the moment you're located."}
-            </p>
-          </div>
-        )}
-
-        {/* API error */}
-        {geocodeError && (
-          <div className="mx-4 mt-3 flex items-start gap-2 p-3 bg-destructive/10 rounded-lg border border-destructive/30 text-sm">
-            <AlertTriangle
-              size={16}
-              className="text-destructive flex-shrink-0 mt-0.5"
-            />
-            <p className="text-muted-foreground">{geocodeError}</p>
-          </div>
-        )}
-
-        {/* TTS narration indicator + skip button */}
-        {isPlaying && (
-          <div
-            className={`mx-4 mt-4 rounded-xl border px-4 py-3 flex items-center gap-3 animate-glow-pulse ${genreBg}`}
-            data-ocid="tts-indicator"
-            aria-live="polite"
-          >
-            <Volume2 size={20} className={`${genreColor} flex-shrink-0`} />
-            <div className="min-w-0 flex-1">
-              <p className={`font-display font-semibold text-sm ${genreColor}`}>
-                Listening to your story…
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Keep running — next chapter triggers automatically
-              </p>
-            </div>
-            {/* Animated bars */}
-            <div className="flex items-center gap-0.5 shrink-0">
-              {[1, 2, 3, 4, 5].map((b) => (
-                <div
-                  key={b}
-                  className={`w-1 rounded-full ${genreColor.replace("text-", "bg-")} animate-pulse`}
-                  style={{
-                    height: `${8 + b * 4}px`,
-                    animationDelay: `${b * 0.12}s`,
-                  }}
-                />
-              ))}
-            </div>
-            {/* Skip narration */}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleSkipNarration}
-              className="shrink-0 h-8 px-2 text-xs gap-1 text-muted-foreground hover:text-foreground"
-              aria-label="Skip narration"
-              data-ocid="skip-narration-btn"
-            >
-              <SkipForward size={14} />
-              Skip
-            </Button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+// ── Static map URL builder ────────────────────────────────────────────────────
+function buildMapUrl(lat: number, lng: number, zoom = 16): string {
+const width = Math.min(window.innerWidth, 640);
+const height = 320;
+return `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lng}&zoom=${zoom}&size=${width}x${height}&maptype=osm&markers=${lat},${lng},red-pushpin`;
 }
 
-function StatCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-col items-center min-w-0">
-      <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
-        {label}
-      </span>
-      <span className="font-display font-bold text-base text-foreground tabular-nums">
-        {value}
+// ── Map marker SVG ────────────────────────────────────────────────────────────
+function LocationPin({ className }: { className?: string }) {
+return (
+<svg
+width="28"
+height="36"
+viewBox="0 0 28 36"
+fill="none"
+className={className}
+aria-label="Current location"
+>
+<title>Current location</title>
+<ellipse cx="14" cy="34" rx="6" ry="2" fill="rgba(0,0,0,0.3)" />
+<path
+d="M14 0C7.373 0 2 5.373 2 12c0 9 12 22 12 22S26 21 26 12C26 5.373 20.627 0 14 0z"
+fill="oklch(var(--primary))"
+stroke="white"
+strokeWidth="2"
+/>
+<circle cx="14" cy="12" r="4" fill="white" />
+</svg>
+);
+}
+
+// ── GPS Map Component ─────────────────────────────────────────────────────────
+const GPS_DOTS = [“gps-dot-0”, “gps-dot-1”, “gps-dot-2”] as const;
+const GPS_DOT_DELAYS: Record<string, number> = {
+“gps-dot-0”: 0,
+“gps-dot-1”: 0.2,
+“gps-dot-2”: 0.4,
+};
+
+function RunMap({
+lat,
+lng,
+hasGps,
+}: {
+lat: number | null;
+lng: number | null;
+hasGps: boolean;
+}) {
+const imgRef = useRef<HTMLImageElement>(null);
+const [mapSrc, setMapSrc] = useState<string>(””);
+const [mapError, setMapError] = useState(false);
+
+useEffect(() => {
+if (lat === null || lng === null) return;
+const src = buildMapUrl(lat, lng);
+setMapSrc(src);
+setMapError(false);
+}, [lat, lng]);
+
+if (!hasGps || !mapSrc || mapError) {
+return (
+<div className="absolute inset-0 map-grid flex flex-col items-center justify-center gap-3">
+<motion.div
+animate={{ rotate: 360 }}
+transition={{ duration: 8, repeat: INF, ease: “linear” }}
+>
+<Compass size={52} className="text-accent/50" />
+</motion.div>
+<p className="font-display text-xs uppercase tracking-widest text-muted-foreground">
+{hasGps ? “Loading map…” : “Acquiring GPS signal…”}
+</p>
+<div className="flex gap-1.5 mt-1">
+{GPS_DOTS.map((key) => (
+<motion.span
+key={key}
+className=“w-1.5 h-1.5 rounded-full bg-accent/40”
+animate={{ opacity: [0.3, 1, 0.3] }}
+transition={{
+duration: 1.2,
+delay: GPS_DOT_DELAYS[key],
+repeat: INF,
+}}
+/>
+))}
+</div>
+</div>
+);
+}
+
+return (
+<div className="absolute inset-0 overflow-hidden">
+<img
+ref={imgRef}
+src={mapSrc}
+alt=“OpenStreetMap showing current run location”
+className=“w-full h-full object-cover opacity-85”
+onError={() => setMapError(true)}
+style={{ filter: “brightness(0.75) saturate(0.8)” }}
+/>
+{/* Vignette for immersive overlay */}
+<div
+className=“absolute inset-0 pointer-events-none”
+style={{
+background:
+“radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.65) 100%)”,
+}}
+/>
+{/* Current location marker — centered */}
+<div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+<motion.div
+animate={{ y: [0, -4, 0] }}
+transition={{ duration: 2, repeat: INF, ease: “easeInOut” }}
+style={{ marginTop: -18 }}
+>
+<LocationPin />
+</motion.div>
+</div>
+{/* GPS accuracy pulse ring */}
+<div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+<motion.div
+className=“rounded-full border-2 border-primary/40”
+animate={{ scale: [1, 2.5, 1], opacity: [0.6, 0, 0.6] }}
+transition={{ duration: 2.5, repeat: INF, ease: “easeOut” }}
+style={{ width: 24, height: 24 }}
+/>
+</div>
+</div>
+);
+}
+
+// ── TTS Narrating overlay ─────────────────────────────────────────────────────
+const WAVE_BARS = [
+{ key: “bar-0”, height: 0.6, delay: 0 },
+{ key: “bar-1”, height: 1, delay: 0.1 },
+{ key: “bar-2”, height: 0.7, delay: 0.2 },
+{ key: “bar-3”, height: 1, delay: 0.3 },
+{ key: “bar-4”, height: 0.5, delay: 0.4 },
+];
+
+function NarratingBadge() {
+return (
+<motion.div
+initial={{ opacity: 0, scale: 0.9 }}
+animate={{ opacity: 1, scale: 1 }}
+exit={{ opacity: 0, scale: 0.9 }}
+className=“flex items-center gap-2 bg-accent/20 border border-accent/40 rounded-full px-3 py-1.5”
+>
+<div className="flex gap-0.5 items-end h-4">
+{WAVE_BARS.map(({ key, height, delay }) => (
+<motion.span
+key={key}
+className=“w-0.5 rounded-full bg-accent”
+animate={{ scaleY: [height, 1, height] }}
+transition={{ duration: 0.6, delay, repeat: INF }}
+style={{ height: “100%”, transformOrigin: “bottom” }}
+/>
+))}
+</div>
+<span className="font-display text-xs uppercase tracking-widest text-accent">
+Narrating…
+</span>
+</motion.div>
+);
+}
+
+// ── Spinner dots ──────────────────────────────────────────────────────────────
+const SPIN_DOTS = [
+{ key: “sd-0”, delay: 0 },
+{ key: “sd-1”, delay: 0.15 },
+{ key: “sd-2”, delay: 0.3 },
+];
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+export default function ActiveRunPage() {
+const { runId } = useParams({ from: “/run/$runId” });
+const navigate = useNavigate();
+const { backend } = useBackend();
+const { principal } = useAuth();
+
+const {
+state,
+startRun,
+stopRun,
+pauseRun,
+resumeRun,
+setCurrentNode,
+makeChoice: makeChoiceLocal,
+setGenerating,
+playTts,
+toggleTts,
+} = useRunActive();
+
+const [isStarted, setIsStarted] = useState(false);
+const [showEndDialog, setShowEndDialog] = useState(false);
+const [genre, setGenre] = useState<Genre>(“fantasy” as Genre);
+
+// Prevent double-generating
+const generatingRef = useRef(false);
+
+// ── Init run from backend ────────────────────────────────────────────────
+useEffect(() => {
+if (isStarted || !backend) return;
+setIsStarted(true);
+
+```
+const runIdNum = BigInt(runId);
+backend
+  .getRun(runIdNum)
+  .then(async (run) => {
+    if (!run) return;
+    const g = run.genre as unknown as Genre;
+    setGenre(g);
+
+    // Load TTS preference from user profile
+    let ttsOn = false;
+    if (principal) {
+      try {
+        const profile = await backend.getProfile(principal);
+        ttsOn = profile?.ttsEnabled ?? false;
+      } catch {
+        /* use default */
+      }
+    }
+    startRun(runId, g, ttsOn);
+
+    if (run.storyNodes.length > 0) {
+      const last = run.storyNodes[run.storyNodes.length - 1];
+      setCurrentNode(adaptBackendNode(last));
+    }
+  })
+  .catch(() => {
+    startRun(runId, genre, false);
+  });
+```
+
+}, [backend, runId, isStarted, startRun, setCurrentNode, genre, principal]);
+
+// ── Sync GPS coords to backend ────────────────────────────────────────────
+const lastSyncedTrailLen = useRef(0);
+useEffect(() => {
+if (!backend || !state.runId) return;
+const trail = state.gpsTrail;
+if (trail.length <= lastSyncedTrailLen.current) return;
+
+```
+const newCoords = trail.slice(lastSyncedTrailLen.current);
+lastSyncedTrailLen.current = trail.length;
+
+const runIdNum = BigInt(runId);
+for (const coord of newCoords) {
+  backend
+    .appendGpsCoords(runIdNum, {
+      lat: coord.lat,
+      lon: coord.lng,
+      timestamp: coord.timestamp,
+    })
+    .catch(() => {
+      /* silent — non-critical */
+    });
+}
+```
+
+}, [state.gpsTrail, backend, runId, state.runId]);
+
+// ── Intersection detected → generate story node ──────────────────────────
+useEffect(() => {
+if (
+!state.pendingIntersection ||
+state.isGeneratingStory ||
+state.isAwaitingChoice ||
+generatingRef.current ||
+!backend
+)
+return;
+
+```
+generatingRef.current = true;
+setGenerating(true);
+
+const intersection = state.pendingIntersection;
+const runIdNum = BigInt(runId);
+const prevNarrative = state.currentNode?.narrativeText ?? "";
+const genreKey = (
+  genre as string
+).toLowerCase() as keyof typeof BackendGenre;
+const backendGenre = BackendGenre[genreKey] ?? BackendGenre.fantasy;
+
+const req = {
+  genre: backendGenre,
+  context: `Run in progress. Previous: ${prevNarrative.slice(0, 200)}`,
+  prompt: `The runner has reached the intersection: ${intersection.streetName}. Generate an immersive ${genre} story node with 2-3 choices for which direction to go.`,
+  intersectionHint: intersection.streetName,
+};
+
+backend
+  .generateStoryNode(req)
+  .then(async (aiResp) => {
+    const newNode: StoryNode = {
+      id: `node-${Date.now()}`,
+      runId,
+      nodeIndex: (state.currentNode?.nodeIndex ?? -1) + 1,
+      narrativeText: aiResp.narrative,
+      choices: aiResp.choices.map((c) => ({
+        id: String(c.id),
+        direction: c.direction.toLowerCase() as
+          | "left"
+          | "right"
+          | "straight"
+          | "back",
+        label: c.text,
+        previewText: "",
+      })),
+      intersection,
+      timestamp: BigInt(Date.now()),
+    };
+
+    // Persist the node
+    const backendNode = {
+      id: BigInt(Date.now()),
+      createdAt: BigInt(Date.now()),
+      narrative: aiResp.narrative,
+      choices: aiResp.choices,
+      generatedByAi: true,
+      intersection: {
+        heading: Direction.straight,
+        streetNames: [intersection.streetName],
+        coords: {
+          lat: intersection.lat,
+          lon: intersection.lng,
+          timestamp: BigInt(Date.now()),
+        },
+      },
+    };
+    backend.addStoryNode(runIdNum, backendNode).catch(() => {
+      /* silent */
+    });
+
+    // TTS flow
+    if (state.ttsEnabled) {
+      setCurrentNode(newNode);
+      try {
+        const ttsResp = await backend.generateTts({
+          text: aiResp.narrative.slice(0, 400),
+          voice: "alloy",
+          speed: 1.0,
+        });
+        if (ttsResp.audioBase64) {
+          await playTts(ttsResp.audioBase64);
+        }
+      } catch {
+        // TTS failed silently
+      }
+    } else {
+      setCurrentNode(newNode);
+    }
+  })
+  .catch(() => {
+    setGenerating(false);
+  })
+  .finally(() => {
+    generatingRef.current = false;
+  });
+```
+
+}, [
+state.pendingIntersection,
+state.isGeneratingStory,
+state.isAwaitingChoice,
+backend,
+genre,
+runId,
+state.currentNode,
+state.ttsEnabled,
+setCurrentNode,
+setGenerating,
+playTts,
+]);
+
+// ── Handle choice selection ──────────────────────────────────────────────
+const handleChoice = useCallback(
+(choiceId: string) => {
+if (!backend || generatingRef.current) return;
+makeChoiceLocal(choiceId);
+
+```
+  const runIdNum = BigInt(runId);
+  const nodeIdStr = state.currentNode?.id?.replace(/\D/g, "") ?? "0";
+  const nodeId = nodeIdStr ? BigInt(nodeIdStr) : BigInt(0);
+  const choiceIdStr = choiceId.replace(/\D/g, "") ?? "0";
+  const cId = choiceIdStr ? BigInt(choiceIdStr) : BigInt(0);
+
+  backend.makeChoice(runIdNum, nodeId, cId).catch(() => {
+    /* silent */
+  });
+
+  // ── Auto-generate next chapter after choice at intersection ────────
+  if (state.currentNode?.intersection) {
+    // Trigger chapter generation after a short delay to allow state update
+    setTimeout(() => {
+      if (generatingRef.current) return;
+
+      generatingRef.current = true;
+      setGenerating(true);
+
+      const intersection = state.currentNode!.intersection!;
+      const prevNarrative = state.currentNode?.narrativeText ?? "";
+      const genreKey = (
+        genre as string
+      ).toLowerCase() as keyof typeof BackendGenre;
+      const backendGenre = BackendGenre[genreKey] ?? BackendGenre.fantasy;
+
+      const req = {
+        genre: backendGenre,
+        context: `Run in progress. Previous: ${prevNarrative.slice(0, 200)}. The runner chose to go ${
+          state.currentNode?.choices.find((c) => c.id === choiceId)?.direction || "ahead"
+        }.`,
+        prompt: `The runner chose to go ${
+          state.currentNode?.choices.find((c) => c.id === choiceId)?.direction || "ahead"
+        } at the intersection: ${intersection.streetName}. Continue the ${genre} story adventure with an immersive next chapter and generate 2-3 new directional choices.`,
+        intersectionHint: intersection.streetName,
+      };
+
+      backend
+        .generateStoryNode(req)
+        .then(async (aiResp) => {
+          const newNode: StoryNode = {
+            id: `node-${Date.now()}`,
+            runId,
+            nodeIndex: (state.currentNode?.nodeIndex ?? -1) + 1,
+            narrativeText: aiResp.narrative,
+            choices: aiResp.choices.map((c) => ({
+              id: String(c.id),
+              direction: c.direction.toLowerCase() as
+                | "left"
+                | "right"
+                | "straight"
+                | "back",
+              label: c.text,
+              previewText: "",
+            })),
+            intersection,
+            timestamp: BigInt(Date.now()),
+          };
+
+          // Persist the node
+          const backendNode = {
+            id: BigInt(Date.now()),
+            createdAt: BigInt(Date.now()),
+            narrative: aiResp.narrative,
+            choices: aiResp.choices,
+            generatedByAi: true,
+            intersection: {
+              heading: Direction.straight,
+              streetNames: [intersection.streetName],
+              coords: {
+                lat: intersection.lat,
+                lon: intersection.lng,
+                timestamp: BigInt(Date.now()),
+              },
+            },
+          };
+          backend.addStoryNode(runIdNum, backendNode).catch(() => {
+            /* silent */
+          });
+
+          // TTS flow
+          if (state.ttsEnabled) {
+            setCurrentNode(newNode);
+            try {
+              const ttsResp = await backend.generateTts({
+                text: aiResp.narrative.slice(0, 400),
+                voice: "alloy",
+                speed: 1.0,
+              });
+              if (ttsResp.audioBase64) {
+                await playTts(ttsResp.audioBase64);
+              }
+            } catch {
+              // TTS failed silently
+            }
+          } else {
+            setCurrentNode(newNode);
+          }
+        })
+        .catch(() => {
+          setGenerating(false);
+        })
+        .finally(() => {
+          generatingRef.current = false;
+        });
+    }, 300); // Small delay to allow state to settle
+  }
+},
+[backend, makeChoiceLocal, runId, state, genre, setGenerating, setCurrentNode, playTts],
+```
+
+);
+
+// ── End run ──────────────────────────────────────────────────────────────
+const handleFinishConfirm = useCallback(async () => {
+setShowEndDialog(false);
+
+```
+if (backend) {
+  const runIdNum = BigInt(runId);
+  const endTime = BigInt(Date.now());
+  const distMeters = Math.round(state.stats.distanceKm * 1000);
+  const paceSecPerKm =
+    state.stats.paceMinPerKm > 0
+      ? Math.round(state.stats.paceMinPerKm * 60)
+      : 0;
+
+  await backend
+    .finishRun(runIdNum, endTime, distMeters, paceSecPerKm)
+    .catch(() => {
+      /* silent */
+    });
+}
+
+stopRun();
+navigate({ to: "/story/$runId", params: { runId } });
+```
+
+}, [backend, runId, state.stats, stopRun, navigate]);
+
+const position =
+state.lastPosition ??
+(state.gpsTrail.length > 0
+? state.gpsTrail[state.gpsTrail.length - 1]
+: null);
+
+const choicesLocked = state.ttsEnabled && state.isTtsPlaying;
+const showChoices =
+state.currentNode &&
+state.currentNode.choices.length > 0 &&
+!state.isGeneratingStory;
+
+const genreLabel = GENRE_LABEL[genre as string] ?? String(genre);
+
+return (
+<div
+className="relative flex flex-col h-screen overflow-hidden bg-background"
+data-ocid="active-run-page"
+>
+{/* ── Stats bar ── */}
+<RunStatsBar stats={state.stats} />
+
+```
+  {/* ── Map ── */}
+  <div className="flex-1 relative overflow-hidden">
+    <RunMap
+      lat={position?.lat ?? null}
+      lng={position?.lng ?? null}
+      hasGps={state.gpsTrail.length > 0}
+    />
+
+    {/* Pause overlay */}
+    <AnimatePresence>
+      {state.isPaused && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="absolute inset-0 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center gap-4 z-10"
+        >
+          <div className="w-16 h-16 rounded-full border-2 border-primary/40 bg-card/80 flex items-center justify-center shadow-story">
+            <Pause size={28} className="text-primary" />
+          </div>
+          <p className="font-display text-lg uppercase tracking-[0.25em] text-foreground">
+            Paused
+          </p>
+          <p className="font-body text-sm text-muted-foreground">
+            GPS tracking suspended
+          </p>
+          <Button
+            data-ocid="resume-run-btn"
+            variant="outline"
+            className="mt-2 border-primary/40 font-display uppercase tracking-wider text-sm"
+            onClick={resumeRun}
+          >
+            <Play size={14} className="mr-1.5" />
+            Resume Run
+          </Button>
+        </motion.div>
+      )}
+    </AnimatePresence>
+
+    {/* Intersection badge (floating on map) */}
+    <AnimatePresence>
+      {state.pendingIntersection && !state.isGeneratingStory && (
+        <motion.div
+          initial={{ x: -32, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          exit={{ x: -32, opacity: 0 }}
+          className="absolute top-3 left-3 z-20 bg-card/90 backdrop-blur border border-accent/40 rounded-xl px-3 py-2 shadow-story max-w-[200px]"
+        >
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <motion.div
+              className="w-2 h-2 rounded-full bg-accent"
+              animate={{ opacity: [1, 0.4, 1] }}
+              transition={{ duration: 1, repeat: INF }}
+            />
+            <span className="font-display text-[10px] uppercase tracking-widest text-accent">
+              Intersection
+            </span>
+          </div>
+          <p className="font-mono text-xs text-foreground truncate">
+            {state.pendingIntersection.streetName}
+          </p>
+        </motion.div>
+      )}
+    </AnimatePresence>
+
+    {/* Current street badge */}
+    {state.currentStreetName && !state.pendingIntersection && (
+      <div className="absolute top-3 left-3 z-20 bg-card/70 backdrop-blur border border-border/30 rounded-lg px-2.5 py-1.5">
+        <p className="font-mono text-[10px] text-muted-foreground truncate max-w-[180px]">
+          {state.currentStreetName}
+        </p>
+      </div>
+    )}
+
+    {/* Map attribution */}
+    <div className="absolute bottom-1 right-1 z-10">
+      <span className="text-[9px] text-muted-foreground/50 font-mono">
+        © OpenStreetMap
       </span>
     </div>
-  );
+  </div>
+
+  {/* ── Bottom story + controls panel ── */}
+  <div
+    className="relative bg-background/97 backdrop-blur-md border-t border-border/40 px-4 pt-3 pb-safe space-y-3"
+    style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+  >
+    {/* Control row */}
+    <div className="flex items-center gap-2">
+      <Badge
+        variant="outline"
+        className="border-primary/30 text-primary bg-primary/5 font-display uppercase tracking-widest text-[10px] shrink-0"
+      >
+        {genreLabel}
+      </Badge>
+
+      {/* Narrating indicator */}
+      <div className="flex-1 flex justify-center">
+        <AnimatePresence>
+          {state.isTtsPlaying && <NarratingBadge />}
+        </AnimatePresence>
+      </div>
+
+      <div className="flex items-center gap-1.5 shrink-0">
+        <Button
+          data-ocid="tts-toggle-run"
+          variant="ghost"
+          size="sm"
+          onClick={toggleTts}
+          aria-label={
+            state.ttsEnabled ? "Disable narration" : "Enable narration"
+          }
+          className="h-8 w-8 p-0"
+        >
+          {state.ttsEnabled ? (
+            <Volume2 size={15} className="text-accent" />
+          ) : (
+            <VolumeX size={15} className="text-muted-foreground" />
+          )}
+        </Button>
+
+        <Button
+          data-ocid="pause-run-btn"
+          variant="ghost"
+          size="sm"
+          onClick={state.isPaused ? resumeRun : pauseRun}
+          aria-label={state.isPaused ? "Resume run" : "Pause run"}
+          className="h-8 w-8 p-0"
+        >
+          {state.isPaused ? (
+            <Play size={15} className="text-primary" />
+          ) : (
+            <Pause size={15} className="text-muted-foreground" />
+          )}
+        </Button>
+
+        <Button
+          data-ocid="finish-run-btn"
+          variant="destructive"
+          size="sm"
+          onClick={() => setShowEndDialog(true)}
+          className="h-8 px-3 font-display uppercase tracking-wider text-xs"
+        >
+          <Square size={10} className="mr-1" />
+          End
+        </Button>
+      </div>
+    </div>
+
+    {/* Story panel */}
+    <StoryPanel
+      node={state.currentNode}
+      isGenerating={state.isGeneratingStory}
+    />
+
+    {/* Choice buttons */}
+    <AnimatePresence mode="wait">
+      {showChoices && (
+        <motion.div
+          key={state.currentNode?.id}
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.3 }}
+          className="space-y-2"
+          data-ocid="choice-panel"
+        >
+          {state.currentNode!.choices.map((choice, idx) => (
+            <motion.div
+              key={choice.id}
+              initial={{ opacity: 0, x: -12 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: idx * 0.08 }}
+            >
+              <ChoiceButton
+                choice={choice}
+                onChoose={handleChoice}
+                disabled={state.isGeneratingStory}
+                ttsBlocked={choicesLocked}
+              />
+            </motion.div>
+          ))}
+        </motion.div>
+      )}
+    </AnimatePresence>
+
+    {/* Generating spinner */}
+    <AnimatePresence>
+      {state.isGeneratingStory && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="flex items-center gap-2.5 justify-center py-1"
+          data-ocid="generating-indicator"
+        >
+          <div className="flex gap-1">
+            {SPIN_DOTS.map(({ key, delay }) => (
+              <motion.span
+                key={key}
+                className="w-1.5 h-1.5 rounded-full bg-primary"
+                animate={{ opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 0.9, delay, repeat: INF }}
+              />
+            ))}
+          </div>
+          <span className="font-body text-xs text-muted-foreground italic">
+            Weaving your fate…
+          </span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  </div>
+
+  {/* ── End run confirmation dialog ── */}
+  <AlertDialog open={showEndDialog} onOpenChange={setShowEndDialog}>
+    <AlertDialogContent className="bg-card border-border/60">
+      <AlertDialogHeader>
+        <AlertDialogTitle className="font-display text-foreground">
+          End this adventure?
+        </AlertDialogTitle>
+        <AlertDialogDescription className="font-body text-muted-foreground">
+          Your run will be saved and you can relive the full story. You've
+          covered{" "}
+          <span className="text-primary font-semibold">
+            {state.stats.distanceKm.toFixed(2)} km
+          </span>{" "}
+          in this chapter.
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <AlertDialogFooter>
+        <AlertDialogCancel
+          data-ocid="cancel-end-run"
+          className="font-display"
+        >
+          Keep Running
+        </AlertDialogCancel>
+        <AlertDialogAction
+          data-ocid="confirm-end-run"
+          onClick={handleFinishConfirm}
+          className="bg-destructive text-destructive-foreground hover:bg-destructive/90 font-display"
+        >
+          End & Save Story
+        </AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>
+</div>
+```
+
+);
+}
+
+// ── Adapter ───────────────────────────────────────────────────────────────────
+function adaptBackendNode(node: {
+id: bigint;
+narrative: string;
+choices: Array<{
+id: bigint;
+direction: Direction;
+text: string;
+chosen: boolean;
+}>;
+intersection?: {
+coords: { lat: number; lon: number };
+streetNames: string[];
+};
+createdAt: bigint;
+}): StoryNode {
+return {
+id: String(node.id),
+runId: “”,
+nodeIndex: 0,
+narrativeText: node.narrative,
+choices: node.choices.map((c) => ({
+id: String(c.id),
+direction: c.direction.toLowerCase() as
+| “left”
+| “right”
+| “straight”
+| “back”,
+label: c.text,
+previewText: “”,
+})),
+intersection: node.intersection
+? {
+lat: node.intersection.coords.lat,
+lng: node.intersection.coords.lon,
+streetName: node.intersection.streetNames.join(” & “),
+approachBearing: 0,
+distanceFromRunner: 0,
+}
+: undefined,
+timestamp: node.createdAt,
+};
 }
