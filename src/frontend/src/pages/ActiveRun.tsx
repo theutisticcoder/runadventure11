@@ -6,7 +6,7 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
-  AlertDialogTitle
+  AlertDialogTitle,
 } from “@/components/ui/alert-dialog”;
 import { Badge } from “@/components/ui/badge”;
 import { Button } from “@/components/ui/button”;
