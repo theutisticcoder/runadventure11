@@ -169,7 +169,8 @@ export async function generateTTS(text: string): Promise<ArrayBuffer> {
     throw new Error(`TTS API error: ${response.status} ${errText}`);
   }
 
-  const arrayBuffer = response.arrayBuffer();
+  const data = await response.json();
+    const arrayBuffer = Buffer.from(data.audio_data, 'base64');
   console.log(arrayBuffer)
   console.log(response)
   
